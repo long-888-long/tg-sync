@@ -398,7 +398,7 @@ def _llm_call(cfg, sys_p, user_msg):
             {"role": "user", "content": user_msg},
         ],
         "temperature": 0.3,
-        "max_tokens": 1500,
+        "max_tokens": 3000,
     }
     req = urllib.request.Request(
         url,
@@ -411,7 +411,12 @@ def _llm_call(cfg, sys_p, user_msg):
     )
     with urllib.request.urlopen(req, timeout=cfg.llm_timeout) as resp:
         data = json.loads(resp.read().decode("utf-8"))
-    return data["choices"][0]["message"]["content"].strip()
+    msg = data["choices"][0]["message"]
+    text = (msg.get("content") or "").strip()
+    # 推理模型兼容：content 为空时从 reasoning_content 提取
+    if not text:
+        text = (msg.get("reasoning_content") or "").strip()
+    return text
 
 
 # ---------------- 图片水印处理 ----------------
