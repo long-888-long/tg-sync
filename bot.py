@@ -30,7 +30,7 @@ try:
 except Exception:
     HAS_BS4 = False
 
-VERSION = "2.4"
+VERSION = "2.5"
 API = "https://api.telegram.org/bot{token}/{method}"
 TIMEOUT = 60
 
@@ -42,6 +42,7 @@ class Config:
         self.dest = self._split(os.environ.get("DEST", ""))
         self.mode = os.environ.get("MODE", "repost").strip().lower() or "repost"
         self.wm_mode = os.environ.get("WM_MODE", "crop_bottom").strip().lower() or "off"
+        self.wm_pos = os.environ.get("WM_POS", "auto").strip().lower() or "auto"
         self.wm_amount = float(os.environ.get("WM_AMOUNT", "0.08") or 0.08)
         self.ad_filter = os.environ.get("AD_FILTER", "true").strip().lower() == "true"
         self.ad_keywords = self._split(os.environ.get("AD_KEYWORDS", ""))
@@ -76,8 +77,10 @@ class Config:
             errs.append("MODE 只能是 forward/copy/repost/scrape")
         if self.mode == "scrape" and not HAS_BS4:
             errs.append("MODE=scrape 需要安装 beautifulsoup4（requirements.txt 已包含）")
-        if self.wm_mode not in ("off", "crop_bottom", "crop_corner", "cover_bottom", "cover_corner"):
-            errs.append("WM_MODE 只能是 off/crop_bottom/crop_corner/cover_bottom/cover_corner")
+        if self.wm_mode not in ("off", "crop_bottom", "crop_corner", "cover_bottom", "cover_corner", "remove"):
+            errs.append("WM_MODE 只能是 off/crop_bottom/crop_corner/cover_bottom/cover_corner/remove")
+        if self.wm_pos not in ("auto", "bottom_right", "bottom_left", "top_right", "top_left", "bottom_center"):
+            errs.append("WM_POS 只能是 auto/bottom_right/bottom_left/top_right/top_left/bottom_center")
         if not (0 < self.wm_amount < 0.5):
             errs.append("WM_AMOUNT 需在 0~0.5 之间")
         if self.rewrite and not self.llm_api_key:
@@ -253,6 +256,61 @@ def _llm_call(cfg, sys_p, user_msg):
 
 
 # ---------------- 图片水印处理 ----------------
+try:
+    import numpy as _np
+    import cv2 as _cv2
+    HAS_CV2 = True
+except Exception:
+    HAS_CV2 = False
+
+
+def _detect_wm_region(img, pos):
+    """确定水印区域 (x, y, w, h)。pos=auto 时用边缘能量自动选角。"""
+    w, h = img.size
+    rw, rh = int(w * 0.5), int(h * 0.15)
+    regions = {
+        "bottom_right": (w - rw, h - rh, rw, rh),
+        "bottom_left": (0, h - rh, rw, rh),
+        "top_right": (w - rw, 0, rw, rh),
+        "top_left": (0, 0, rw, rh),
+        "bottom_center": (int(w * 0.25), h - rh, int(w * 0.5), rh),
+    }
+    if pos in regions:
+        return regions[pos]
+    # auto：选边缘能量最高的角（水印文字=高边缘）
+    best_name, best_score = "bottom_right", -1.0
+    gray = img.convert("L")
+    for name, (x, y, rw2, rh2) in regions.items():
+        crop = gray.crop((x, y, x + rw2, y + rh2))
+        edges = crop.filter(ImageFilter.FIND_EDGES)
+        score = sum(edges.getdata())
+        if score > best_score:
+            best_score, best_name = score, name
+    return regions[best_name]
+
+
+def _remove_wm_inpaint(img, region):
+    """OpenCV 修复去水印：ROI 内检测与背景差异大的像素（水印文字/logo）并用周围内容修复填充。失败返回 None。"""
+    if not HAS_CV2:
+        return None
+    x, y, rw, rh = region
+    arr = _np.array(img)
+    roi = arr[y:y + rh, x:x + rw].copy()
+    if roi.size == 0:
+        return None
+    gray = _cv2.cvtColor(roi, _cv2.COLOR_RGB2GRAY)
+    bg = _cv2.medianBlur(gray, 21)
+    diff = _cv2.absdiff(gray, bg)
+    _, mask = _cv2.threshold(diff, 22, 255, _cv2.THRESH_BINARY)
+    mask = _cv2.morphologyEx(mask, _cv2.MORPH_OPEN, _np.ones((2, 2), _np.uint8))
+    mask = _cv2.dilate(mask, _np.ones((3, 3), _np.uint8), iterations=1)
+    if int(mask.sum()) < 20:
+        return None  # 该区域没有明显水印
+    res = _cv2.inpaint(roi, mask, 3, _cv2.INPAINT_TELEA)
+    arr[y:y + rh, x:x + rw] = res
+    return Image.fromarray(arr)
+
+
 def process_media_bytes(raw, cfg, kind="photo"):
     """按 WM_MODE 处理图片字节；视频由 ffmpeg 处理（GitHub runner 自带）。"""
     if kind == "video":
@@ -264,7 +322,18 @@ def process_media_bytes(raw, cfg, kind="photo"):
         img = img.convert("RGB")
         w, h = img.size
         amount = max(0.02, min(0.3, cfg.wm_amount))
-        if cfg.wm_mode == "crop_bottom":
+        if cfg.wm_mode == "remove":
+            region = _detect_wm_region(img, cfg.wm_pos)
+            img2 = _remove_wm_inpaint(img, region)
+            if img2 is not None:
+                img = img2
+            else:
+                # 降级：对水印区域做模糊遮盖（无 cv2 或未检测到水印时）
+                blur = img.filter(ImageFilter.GaussianBlur(12))
+                x, y, rw, rh = region
+                band = blur.crop((x, y, x + rw, y + rh))
+                img.paste(band, (x, y))
+        elif cfg.wm_mode == "crop_bottom":
             crop_h = int(h * amount)
             img = img.crop((0, 0, w, h - crop_h))
         elif cfg.wm_mode == "crop_corner":
