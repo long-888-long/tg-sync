@@ -24,7 +24,13 @@ try:
 except Exception:
     HAS_PIL = False
 
-VERSION = "2.2"
+try:
+    from bs4 import BeautifulSoup
+    HAS_BS4 = True
+except Exception:
+    HAS_BS4 = False
+
+VERSION = "2.3"
 API = "https://api.telegram.org/bot{token}/{method}"
 TIMEOUT = 60
 
@@ -50,6 +56,7 @@ class Config:
         self.state_file = os.environ.get("STATE_FILE", "state.json").strip()
         self.workflow = os.environ.get("WORKFLOW", "").strip()
         self.replace_mentions = os.environ.get("REPLACE_MENTIONS", "").strip()
+        self.scrape_catchup = os.environ.get("SCRAPE_CATCHUP", "false").strip().lower() == "true"
 
     @staticmethod
     def _split(s):
@@ -65,8 +72,10 @@ class Config:
             errs.append("缺少 SOURCE（源频道，多个用逗号分隔，如 @a,@b）")
         if not self.dest:
             errs.append("缺少 DEST（目标频道）")
-        if self.mode not in ("forward", "copy", "repost"):
-            errs.append("MODE 只能是 forward/copy/repost")
+        if self.mode not in ("forward", "copy", "repost", "scrape"):
+            errs.append("MODE 只能是 forward/copy/repost/scrape")
+        if self.mode == "scrape" and not HAS_BS4:
+            errs.append("MODE=scrape 需要安装 beautifulsoup4（requirements.txt 已包含）")
         if self.wm_mode not in ("off", "crop_bottom", "crop_corner", "cover_bottom", "cover_corner"):
             errs.append("WM_MODE 只能是 off/crop_bottom/crop_corner/cover_bottom/cover_corner")
         if not (0 < self.wm_amount < 0.5):
@@ -443,6 +452,140 @@ def edit_sync(cfg, edit, state):
     return updated
 
 
+# ---------------- 公开频道抓取搬运（MODE=scrape） ----------------
+SCRAPE_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+
+def fetch_page(username):
+    """抓取 t.me/s/<username> 公开预览页 HTML（无需登录/加入）"""
+    url = "https://t.me/s/{}".format(username.lstrip("@"))
+    req = urllib.request.Request(url, headers={"User-Agent": SCRAPE_UA})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        return resp.read().decode("utf-8", errors="replace")
+
+
+def parse_messages(html):
+    """解析预览页，返回消息列表 [{post_id, text, media, datetime}]"""
+    if not HAS_BS4:
+        return []
+    soup = BeautifulSoup(html, "html.parser")
+    out = []
+    for wrap in soup.select("div.tgme_widget_message"):
+        post = wrap.get("data-post", "")
+        try:
+            post_id = int(post.split("/")[-1])
+        except Exception:
+            continue
+        m = {"post_id": post_id, "text": "", "media": None, "datetime": ""}
+        t = wrap.select_one("div.tgme_widget_message_text")
+        if t:
+            m["text"] = t.get_text("\n", strip=True)
+        tm = wrap.select_one("time")
+        if tm:
+            m["datetime"] = tm.get("datetime", "")
+        photo = wrap.select_one("a.tgme_widget_message_photo_wrap")
+        if photo:
+            mm = re.search(r"url\(['\"]?([^'\")]+)['\"]?\)", photo.get("style", ""))
+            if mm:
+                m["media"] = {"type": "photo", "url": mm.group(1)}
+        if not m["media"]:
+            video = wrap.select_one("video.tgme_widget_message_video")
+            if video and video.get("src"):
+                m["media"] = {"type": "video", "url": video["src"]}
+        if not m["media"]:
+            doc = wrap.select_one("a.tgme_widget_message_document")
+            if doc and doc.get("href"):
+                m["media"] = {"type": "document", "url": doc["href"],
+                              "fname": doc.get_text(strip=True) or "file.bin"}
+        out.append(m)
+    return out
+
+
+def fetch_url_bytes(url):
+    """下载媒体原始字节（用于去水印重传）"""
+    req = urllib.request.Request(url, headers={"User-Agent": SCRAPE_UA})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        return resp.read()
+
+
+def send_scraped(cfg, dest, msg):
+    """把抓取到的消息发送到目标频道。返回 message_id 或 None（被过滤/失败）"""
+    text = msg.get("text") or ""
+    if cfg.ad_filter:
+        if contains_ad(text, cfg.ad_keywords):
+            return None
+        if cfg.ad_llm:
+            j = llm_judge_ad(text, cfg)
+            if j is True:
+                return None
+    clean = strip_trace(text, cfg)
+    if cfg.rewrite and clean:
+        clean = llm_rewrite(clean, cfg)
+        clean = strip_trace(clean, cfg)
+    caption = build_caption(clean) if clean else None
+    media = msg.get("media")
+    if media is None:
+        r = send_text(cfg, dest, clean or "[无内容消息]")
+        return r["result"]["message_id"] if r.get("ok") else None
+    try:
+        raw = fetch_url_bytes(media["url"])
+    except Exception:
+        print("媒体下载失败: {}".format(media["url"]))
+        return None
+    mtype = media["type"]
+    if mtype == "photo":
+        if cfg.wm_mode != "off":
+            raw = process_media_bytes(raw, cfg, kind="photo")
+        r = send_photo(cfg, dest, raw, caption)
+    elif mtype == "video":
+        if cfg.wm_mode != "off":
+            raw = process_media_bytes(raw, cfg, kind="video")
+        r = send_video(cfg, dest, raw, caption)
+    else:
+        r = send_document(cfg, dest, raw, media.get("fname", "file.bin"), caption)
+    return r["result"]["message_id"] if r.get("ok") else None
+
+
+def scrape_sync(cfg, state):
+    """抓取所有源频道公开预览页，搬运新消息。返回搬运条数。"""
+    seen = state.setdefault("scrape_seen", {})
+    total = 0
+    for src in cfg.source:
+        username = src.lstrip("@")
+        if not username:
+            continue
+        try:
+            html = fetch_page(username)
+        except Exception as e:
+            print("抓取失败 {}: {}".format(username, e))
+            continue
+        msgs = parse_messages(html)
+        if not msgs:
+            print("{} 页面无消息（可能被风控/需要验证）".format(username))
+            continue
+        latest = max(m["post_id"] for m in msgs)
+        last = seen.get(username, 0)
+        if last == 0 and not cfg.scrape_catchup:
+            seen[username] = latest
+            print("{} 已初始化（最新 #{}），不搬运历史".format(username, latest))
+            continue
+        new_msgs = sorted([m for m in msgs if m["post_id"] > last], key=lambda x: x["post_id"])
+        for m in new_msgs:
+            sent = False
+            for dest in cfg.dest:
+                mid = send_scraped(cfg, dest, m)
+                if mid is not None:
+                    sent = True
+                    total += 1
+            if sent:
+                print("已搬运 {} #{} ({})".format(username, m["post_id"], m["datetime"] or "?"))
+            seen[username] = max(seen.get(username, 0), m["post_id"])
+    save_state(cfg, state)
+    print("本次抓取搬运 {} 条".format(total))
+    return total
+
+
 # ---------------- 状态 ----------------
 def load_state(cfg):
     try:
@@ -502,12 +645,16 @@ def main():
     print("规则: {} -> {}".format(",".join(cfg.source), ",".join(cfg.dest)))
     print("模式: {} | 水印: {} | 广告过滤: {} | 改写: {}".format(
         cfg.mode, cfg.wm_mode, cfg.ad_filter, cfg.rewrite))
-    # 检查源/目标可访问
-    for c in cfg.source + cfg.dest:
+    # 检查源/目标可访问（scrape 模式源频道无需加入，跳过源检查）
+    for c in (cfg.dest if cfg.mode == "scrape" else cfg.source + cfg.dest):
         name = resolve_chat(cfg, c)
         if name is None:
             print("警告: 无法访问 {}（机器人不在其中或无权限）".format(c))
     state = load_state(cfg)
+    if cfg.mode == "scrape":
+        print("抓取模式: 源频道无需机器人加入，直接读取公开预览页")
+        scrape_sync(cfg, state)
+        return
     offset = int(state.get("offset", 0))
     if cfg.workflow == "init":
         # 手动触发初始化：保留历史 offset（默认 0 会搬最近 24h 消息）
