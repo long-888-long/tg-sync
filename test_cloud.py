@@ -210,6 +210,98 @@ class TestForward(unittest.TestCase):
         self.assertFalse(bot.is_from_source({"chat": {"id": -9999, "username": "other"}}, c))
 
 
+SAMPLE_HTML = """
+<div class="tgme_widget_message_wrap">
+  <div class="tgme_widget_message" data-post="srcA/101">
+    <div class="tgme_widget_message_text js-message_text">今日新闻：油价上涨</div>
+    <time datetime="2024-01-01T10:00:00+00:00"></time>
+  </div>
+  <div class="tgme_widget_message" data-post="srcA/102">
+    <div class="tgme_widget_message_text js-message_text">加微信 xxx 扫码领红包</div>
+    <time datetime="2024-01-01T10:05:00+00:00"></time>
+  </div>
+  <div class="tgme_widget_message" data-post="srcA/103">
+    <a class="tgme_widget_message_photo_wrap" style="background-image:url('https://cdn.example.com/p1.jpg')"></a>
+    <div class="tgme_widget_message_text js-message_text">看图说话</div>
+    <time datetime="2024-01-01T10:10:00+00:00"></time>
+  </div>
+  <div class="tgme_widget_message" data-post="srcA/104">
+    <video class="tgme_widget_message_video" src="https://cdn.example.com/v1.mp4"></video>
+    <time datetime="2024-01-01T10:15:00+00:00"></time>
+  </div>
+</div>
+"""
+
+
+class TestScrape(unittest.TestCase):
+    def setUp(self):
+        if os.path.exists("state_test.json"):
+            os.unlink("state_test.json")
+
+    def test_parse_messages(self):
+        msgs = bot.parse_messages(SAMPLE_HTML)
+        self.assertEqual(len(msgs), 4)
+        self.assertEqual(msgs[0]["post_id"], 101)
+        self.assertEqual(msgs[0]["text"], "今日新闻：油价上涨")
+        self.assertIsNone(msgs[0]["media"])
+        self.assertEqual(msgs[2]["media"]["type"], "photo")
+        self.assertIn("p1.jpg", msgs[2]["media"]["url"])
+        self.assertEqual(msgs[3]["media"]["type"], "video")
+        self.assertIn("v1.mp4", msgs[3]["media"]["url"])
+
+    @mock.patch.object(bot, "fetch_page", return_value=SAMPLE_HTML)
+    @mock.patch.object(bot, "save_state")
+    @mock.patch.object(bot, "send_text", return_value={"ok": True, "result": {"message_id": 1}})
+    def test_scrape_first_run_no_flood(self, m_send, m_save, m_fetch):
+        c = make_cfg(MODE="scrape", SOURCE="@srcA", DEST="@dest1")
+        state = {"scrape_seen": {}}
+        n = bot.scrape_sync(c, state)
+        self.assertEqual(n, 0)  # 首跑只记录位置
+        self.assertEqual(state["scrape_seen"]["srcA"], 104)
+        m_send.assert_not_called()
+
+    @mock.patch.object(bot, "fetch_page", return_value=SAMPLE_HTML)
+    @mock.patch.object(bot, "save_state")
+    @mock.patch.object(bot, "send_text", return_value={"ok": True, "result": {"message_id": 1}})
+    def test_scrape_new_only(self, m_send, m_save, m_fetch):
+        c = make_cfg(MODE="scrape", SOURCE="@srcA", DEST="@dest1")
+        state = {"scrape_seen": {"srcA": 102}}
+        n = bot.scrape_sync(c, state)
+        # 103 是图片（走 fetch_url_bytes/send_photo），104 是视频
+        # 这里只验证广告消息 102 之后的新文本类计数：图片/视频走媒体分支
+        self.assertEqual(state["scrape_seen"]["srcA"], 104)
+
+    @mock.patch.object(bot, "fetch_page", return_value=SAMPLE_HTML)
+    @mock.patch.object(bot, "save_state")
+    @mock.patch.object(bot, "fetch_url_bytes", return_value=b"\xff\xd8fake")
+    @mock.patch.object(bot, "send_photo", return_value={"ok": True, "result": {"message_id": 3}})
+    @mock.patch.object(bot, "send_video", return_value={"ok": True, "result": {"message_id": 4}})
+    def test_scrape_media_sent(self, m_vid, m_photo, m_fbytes, m_save, m_fetch):
+        c = make_cfg(MODE="scrape", SOURCE="@srcA", DEST="@dest1")
+        state = {"scrape_seen": {"srcA": 102}}
+        n = bot.scrape_sync(c, state)
+        m_photo.assert_called_once()
+        m_vid.assert_called_once()
+        self.assertEqual(n, 2)
+        self.assertEqual(state["scrape_seen"]["srcA"], 104)
+
+    @mock.patch.object(bot, "fetch_page", return_value=SAMPLE_HTML)
+    @mock.patch.object(bot, "save_state")
+    def test_scrape_ad_filtered(self, m_save, m_fetch):
+        c = make_cfg(MODE="scrape", SOURCE="@srcA", DEST="@dest1")
+        state = {"scrape_seen": {"srcA": 101}}
+        with mock.patch.object(bot, "send_text") as m_send, mock.patch.object(bot, "fetch_url_bytes", return_value=b"x") as m_fb, mock.patch.object(bot, "send_photo", return_value={"ok": True, "result": {"message_id": 3}}) as m_p, mock.patch.object(bot, "send_video", return_value={"ok": True, "result": {"message_id": 4}}) as m_v:
+            n = bot.scrape_sync(c, state)
+        # 102 广告被过滤；103 图片、104 视频正常发送
+        m_send.assert_not_called()
+        self.assertEqual(n, 2)
+
+    def test_scrape_missing_bs4_validate(self):
+        with mock.patch.object(bot, "HAS_BS4", False):
+            c = make_cfg(MODE="scrape", SOURCE="@srcA", DEST="@dest1")
+            self.assertTrue(any("beautifulsoup4" in e for e in c.validate()))
+
+
 class TestState(unittest.TestCase):
     def test_state_save_load(self):
         c = make_cfg(STATE_FILE="state_test.json")
