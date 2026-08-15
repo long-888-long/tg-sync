@@ -195,9 +195,45 @@ def contains_hidden_link_ad(text):
     return False
 
 
+FOOTER_PATTERNS = [
+    # 频道/群组引流尾巴：在XX频道 / XX水群 / 投稿通道 / 频道链接 等
+    r"在[\u4e00-\u9fa5A-Za-z0-9_-]{1,20}(?:频道|群|群组)",
+    r"[\u4e00-\u9fa5A-Za-z0-9_-]{1,20}(?:水群|交流群|吹水群|闲聊群|茶馆)",
+    r"投稿通道?",
+    r"频道(?:链接|地址|入口)",
+    r"@[A-Za-z0-9_]{3,32}",
+]
+
+
+def _strip_footer(text):
+    """删除消息末尾的频道/群组引流尾巴（如 '🌸 在花频道 · 茶馆水群 · 投稿通道'）。
+    只删末尾独立成行的引流行，不动正文。"""
+    if not text:
+        return text
+    lines = text.split("\n")
+    # 从末尾往前删，直到遇到不像引流尾巴的行
+    end = len(lines)
+    while end > 0:
+        line = lines[end - 1].strip()
+        if not line:
+            end -= 1
+            continue
+        # 纯装饰符号行（🌸 · 。● etc）也删
+        if re.fullmatch(r"[\s·•●○★☆🌸💬📢🔥✨]+\s*", line):
+            end -= 1
+            continue
+        hit = any(re.search(p, line) for p in FOOTER_PATTERNS)
+        if hit:
+            end -= 1
+            continue
+        break
+    out = "\n".join(lines[:end]).strip()
+    return out
+
+
 def strip_trace(text, cfg):
     """清洗文本痕迹：删除指向源频道的 @提及/t.me 链接 和 aff 引流链接，保留其他普通链接。
-    replace_mentions 为空则删除，否则替换为指定文字。"""
+    再删除末尾的频道/群组引流尾巴。replace_mentions 为空则删除，否则替换为指定文字。"""
     if not text:
         return text
     repl = cfg.replace_mentions
@@ -214,6 +250,7 @@ def strip_trace(text, cfg):
         lambda m: "" if _is_aff_link(m.group(0)) else m.group(0),
         out,
     )
+    out = _strip_footer(out)
     out = re.sub(r"\s{2,}", " ", out).strip()
     return out
 
