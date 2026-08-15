@@ -58,6 +58,30 @@ class Config:
         self.workflow = os.environ.get("WORKFLOW", "").strip()
         self.replace_mentions = os.environ.get("REPLACE_MENTIONS", "").strip()
         self.scrape_catchup = os.environ.get("SCRAPE_CATCHUP", "false").strip().lower() == "true"
+        self.extra_hidden = []
+        self.extra_aff_params = []
+        self.whitelist = []
+        self._load_keywords_file()
+
+    def _load_keywords_file(self):
+        """从 keywords.json 加载动态词库（存在时合并到内置词库）。
+        文件不存在或损坏时静默跳过，只用内置词库，不影响运行。"""
+        try:
+            path = os.environ.get("KEYWORDS_FILE", "keywords.json").strip()
+            if not os.path.exists(path):
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            _set_dynamic_keywords(data)
+            self.extra_hidden = data.get("hidden_link_patterns", []) or []
+            self.extra_aff_params = data.get("aff_params", []) or []
+            self.whitelist = data.get("whitelist", []) or []
+            extra_kw = data.get("ad_keywords", []) or []
+            if extra_kw:
+                self.ad_keywords = list(dict.fromkeys(list(self.ad_keywords) + extra_kw))
+        except Exception:
+            # 词库文件异常不影响主流程
+            pass
 
     @staticmethod
     def _split(s):
@@ -142,15 +166,31 @@ AFF_PARAM_KEYS = ("start", "startapp", "aff", "ref", "code", "invite", "rid", "u
 
 TRACK_PARAM_KEYS = AFF_PARAM_KEYS + ("clickid", "subid", "siteid", "pid", "mid", "sid", "tag", "chl", "share_ref", "utm_source", "utm_medium", "utm_campaign", "utm_content", "aff_sub", "aff_id", "affcode", "refcode", "invite_code", "invitecode")
 
+# 动态词库（由 keywords.json 加载后注入，无则用内置）
+_EXTRA_AFF_PARAMS = []
+_EXTRA_HIDDEN = []
+_EXTRA_WHITELIST = []
+
+
+def _set_dynamic_keywords(data):
+    """注入 keywords.json 的动态词库（模块级，供各检测函数使用）。"""
+    global _EXTRA_AFF_PARAMS, _EXTRA_HIDDEN, _EXTRA_WHITELIST
+    if not data:
+        return
+    _EXTRA_AFF_PARAMS = list(data.get("aff_params", []) or [])
+    _EXTRA_HIDDEN = list(data.get("hidden_link_patterns", []) or [])
+    _EXTRA_WHITELIST = list(data.get("whitelist", []) or [])
+
 def _is_aff_link(link):
     """判断 t.me 链接是否带引流/AFF 跟踪参数（如 ?start=aff_xxx / ?ref=xxx / ?aff=xxx）"""
     m = re.match(r"(?:https?://)?(?:t\.me|telegram\.me)/([^\s?#]+)(?:\?([^\s]+))?", link, re.IGNORECASE)
     if not m:
         return False
     query = m.group(2) or ""
+    keys = AFF_PARAM_KEYS + tuple(_EXTRA_AFF_PARAMS)
     for p in re.split(r"[&;]", query):
         key = p.split("=")[0].strip().lower()
-        if key in AFF_PARAM_KEYS or "aff" in key or "ref" in key:
+        if key in keys or "aff" in key or "ref" in key:
             return True
     return False
 
@@ -170,9 +210,10 @@ def _is_tracking_link(link):
     if re.match(r"(?:t\.me|telegram\.me)/\+", domain):
         return True
     query = m.group(2) or ""
+    keys = TRACK_PARAM_KEYS + tuple(_EXTRA_AFF_PARAMS)
     for p in re.split(r"[&;]", query):
         key = p.split("=")[0].strip().lower()
-        if key in TRACK_PARAM_KEYS or "aff" in key or "ref" in key:
+        if key in keys or "aff" in key or "ref" in key:
             return True
     return False
 
@@ -220,9 +261,12 @@ def contains_hidden_link_ad(text):
     """检测汉字隐藏链接/引流话术。命中说明消息带有引导用户去加群/私聊/看主页的引流意图。"""
     if not text:
         return False
-    for p in HIDDEN_LINK_PATTERNS:
-        if re.search(p, text):
-            return True
+    for p in list(HIDDEN_LINK_PATTERNS) + list(_EXTRA_HIDDEN):
+        try:
+            if re.search(p, text):
+                return True
+        except Exception:
+            continue
     return False
 
 
@@ -287,7 +331,9 @@ def strip_trace(text, cfg):
 
 
 def contains_ad(text, extra_keywords):
-    """关键词 + aff/跟踪链接 + 私有邀请链接 + 汉字隐藏链接广告检测"""
+    """关键词 + aff/跟踪链接 + 私有邀请链接 + 汉字隐藏链接广告检测
+    检测顺序：话术 → 链接 → 关键词；白名单只在关键词环节豁免（防止误杀），
+    不豁免话术/链接检测（那些是更强的引流信号）。"""
     if not text:
         return False
     if contains_hidden_link_ad(text):
@@ -303,9 +349,12 @@ def contains_ad(text, extra_keywords):
     for m in re.finditer(r"(?:t\.me|telegram\.me)/\+[A-Za-z0-9_-]+", text):
         if _is_tracking_link(m.group(0)):
             return True
+    low = text.lower()
+    # 白名单：命中白名单词的消息跳过关键词判定（但上面的话术/链接检测已过，仍可能被拦）
+    if any(w and w.lower() in low for w in _EXTRA_WHITELIST):
+        return False
     kw = set(AD_DEFAULT_KEYWORDS)
     kw.update(extra_keywords or [])
-    low = text.lower()
     for k in kw:
         if k and k.lower() in low:
             return True
