@@ -30,7 +30,7 @@ try:
 except Exception:
     HAS_BS4 = False
 
-VERSION = "2.5"
+VERSION = "2.6"
 API = "https://api.telegram.org/bot{token}/{method}"
 TIMEOUT = 60
 
@@ -163,6 +163,32 @@ AD_DEFAULT_KEYWORDS = [
 ]
 
 
+# 汉字隐藏链接/引流话术模式（如"点我加群""扫码进群""主页有"等）
+HIDDEN_LINK_PATTERNS = [
+    r"点我(?:加|进|入)?群",
+    r"私[聊信]我",
+    r"加(?:我|V|v|VX|薇|微信|QQ)",
+    r"扫(?:码)?(?:加|进|入)?群",
+    r"点击?(?:下方|链接|这里|上面)?(?:的)?(?:链接|按钮|查看|进群)",
+    r"(?:主页|简介|签名|置顶|评论区|个人资料|频道)(?:里|中|有|查看|看|见)",
+    r"(?:进|加)群(?:领|看|获取|福利|红包)",
+    r"[Vv](?:我|信)|扣我|戳我|找我|私我",
+    r"联系我",
+    r"群(?:号|链接|二维码|入口)",
+    r"拉(?:你|我)?进群",
+]
+
+
+def contains_hidden_link_ad(text):
+    """检测汉字隐藏链接/引流话术。命中说明消息带有引导用户去加群/私聊/看主页的引流意图。"""
+    if not text:
+        return False
+    for p in HIDDEN_LINK_PATTERNS:
+        if re.search(p, text):
+            return True
+    return False
+
+
 def strip_trace(text, cfg):
     """清洗文本痕迹：删除指向源频道的 @提及/t.me 链接 和 aff 引流链接，保留其他普通链接。
     replace_mentions 为空则删除，否则替换为指定文字。"""
@@ -187,9 +213,11 @@ def strip_trace(text, cfg):
 
 
 def contains_ad(text, extra_keywords):
-    """关键词 + aff 引流链接广告检测"""
+    """关键词 + aff 引流链接 + 汉字隐藏链接广告检测"""
     if not text:
         return False
+    if contains_hidden_link_ad(text):
+        return True
     for m in re.finditer(r"(?:https?://)?(?:t\.me|telegram\.me)/[^\s?#]+\?[^\s]+", text):
         if _is_aff_link(m.group(0)):
             return True
@@ -496,7 +524,10 @@ def _send_one(cfg, dest, msg, clean_text):
             break
     caption = build_caption(clean_text) if clean_text else None
     if mtype is None:
-        r = send_text(cfg, dest, clean_text or "[无内容消息]")
+        if not clean_text:
+            print("跳过空内容消息（清洗后无正文）")
+            return None
+        r = send_text(cfg, dest, clean_text)
         return r["result"]["message_id"] if r.get("ok") else None
     # 有媒体：先下载
     file_id = msg[media_key][-1]["file_id"] if isinstance(msg[media_key], list) else msg[media_key]["file_id"]
@@ -623,7 +654,11 @@ def send_scraped(cfg, dest, msg):
     caption = build_caption(clean) if clean else None
     media = msg.get("media")
     if media is None:
-        r = send_text(cfg, dest, clean or "[无内容消息]")
+        if not clean:
+            # 原消息为纯链接/提及（被防溯源清洗删光），或 LLM 改写后为空：跳过不搬运
+            print("跳过空内容消息（清洗后无正文）")
+            return None
+        r = send_text(cfg, dest, clean)
         return r["result"]["message_id"] if r.get("ok") else None
     try:
         raw = fetch_url_bytes(media["url"])
