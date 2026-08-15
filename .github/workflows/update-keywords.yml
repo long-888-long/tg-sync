@@ -1,0 +1,42 @@
+name: Auto-Update-Keywords
+
+on:
+  schedule:
+    - cron: '17 3 * * 0'   # 每周日 03:17 UTC（避开整点负载）
+  workflow_dispatch: {}    # 可手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Run keyword updater
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          KEYWORDS_OUT: keywords.json
+        run: python update_keywords.py
+
+      - name: Commit keywords.json if changed
+        run: |
+          git config user.name "tg-sync-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add keywords.json
+          if git diff --cached --quiet; then
+            echo "keywords.json unchanged, skip commit"
+          else
+            git commit -m "chore: auto-update keywords $(date -u +%Y-%m-%d)"
+            git push
+            echo "keywords.json updated & pushed"
+          fi
