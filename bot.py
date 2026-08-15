@@ -30,7 +30,7 @@ try:
 except Exception:
     HAS_BS4 = False
 
-VERSION = "2.3"
+VERSION = "2.4"
 API = "https://api.telegram.org/bot{token}/{method}"
 TIMEOUT = 60
 
@@ -135,6 +135,19 @@ def api_call(token, method, params=None, files=None, timeout=TIMEOUT):
 # ---------------- 文本工具 ----------------
 MENTION_RE = re.compile(r"@[A-Za-z0-9_]{4,32}")
 LINK_RE = re.compile(r"(?:https?://)?(?:t\.me|telegram\.me)/[^\s]+")
+AFF_PARAM_KEYS = ("start", "startapp", "aff", "ref", "code", "invite", "rid", "uid", "promo", "from", "source")
+
+def _is_aff_link(link):
+    """判断 t.me 链接是否带引流/AFF 跟踪参数（如 ?start=aff_xxx / ?ref=xxx / ?aff=xxx）"""
+    m = re.match(r"(?:https?://)?(?:t\.me|telegram\.me)/([^\s?#]+)(?:\?([^\s]+))?", link, re.IGNORECASE)
+    if not m:
+        return False
+    query = m.group(2) or ""
+    for p in re.split(r"[&;]", query):
+        key = p.split("=")[0].strip().lower()
+        if key in AFF_PARAM_KEYS or "aff" in key or "ref" in key:
+            return True
+    return False
 
 AD_DEFAULT_KEYWORDS = [
     "广告", "推广", "特价", "秒杀", "返利", "代购", "贷款", "借款", "博彩", "赌博",
@@ -148,20 +161,35 @@ AD_DEFAULT_KEYWORDS = [
 
 
 def strip_trace(text, cfg):
-    """清洗文本痕迹：@提及 和 t.me 链接。replace_mentions 为空则删除，否则替换。"""
+    """清洗文本痕迹：删除指向源频道的 @提及/t.me 链接 和 aff 引流链接，保留其他普通链接。
+    replace_mentions 为空则删除，否则替换为指定文字。"""
     if not text:
         return text
     repl = cfg.replace_mentions
-    out = MENTION_RE.sub(repl, text)
-    out = LINK_RE.sub(repl, out)
+    out = text
+    for s in cfg.source:
+        name = s.lstrip("@")
+        if not name:
+            continue
+        out = re.sub(r"@%s\b" % re.escape(name), repl, out, flags=re.IGNORECASE)
+        out = re.sub(r"(?:https?://)?(?:t\.me|telegram\.me)/%s\b" % re.escape(name), repl, out, flags=re.IGNORECASE)
+    # aff 引流链接删除；普通 t.me 链接保留
+    out = re.sub(
+        r"(?:https?://)?(?:t\.me|telegram\.me)/[^\s?#]+\?[^\s]+",
+        lambda m: "" if _is_aff_link(m.group(0)) else m.group(0),
+        out,
+    )
     out = re.sub(r"\s{2,}", " ", out).strip()
     return out
 
 
 def contains_ad(text, extra_keywords):
-    """关键词广告检测"""
+    """关键词 + aff 引流链接广告检测"""
     if not text:
         return False
+    for m in re.finditer(r"(?:https?://)?(?:t\.me|telegram\.me)/[^\s?#]+\?[^\s]+", text):
+        if _is_aff_link(m.group(0)):
+            return True
     kw = set(AD_DEFAULT_KEYWORDS)
     kw.update(extra_keywords or [])
     low = text.lower()
@@ -189,8 +217,8 @@ def llm_rewrite(text, cfg):
         return strip_trace(text, cfg)
     sys_p = cfg.rewrite_prompt or (
         "你是文案编辑。请改写以下 Telegram 频道消息："
-        "1.保留全部关键信息（时间/地点/人物/数字/事件）；"
-        "2.去除营销腔、广告词、@提及和链接；"
+        "1.保留全部关键信息（时间/地点/人物/数字/事件）和普通链接（如 t.me/xxx）；"
+        "2.去除营销腔、广告词、@提及和引流链接（带 start/aff/ref/code 等跟踪参数的链接）；"
         "3.语言简洁自然，不增删事实。直接输出改写后的内容，不要任何解释。"
     )
     try:
