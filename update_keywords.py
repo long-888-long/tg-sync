@@ -99,6 +99,38 @@ def load_existing(path="keywords.json"):
     return {"ad_keywords": [], "hidden_link_patterns": [], "aff_params": [], "whitelist": []}
 
 
+def _extract_json(text):
+    """鲁棒 JSON 提取：整个是 JSON → 正则 → raw_decode 扫描。失败返回 None。"""
+    if not text:
+        return None
+    t = text.strip()
+    # 去掉可能的代码块包裹
+    t = re.sub(r"^```(?:json)?\s*", "", t, flags=re.S)
+    t = re.sub(r"\s*```$", "", t, flags=re.S)
+    # 1. 整体尝试
+    try:
+        return json.loads(t)
+    except Exception:
+        pass
+    # 2. 贪婪正则 { ... }
+    m = re.search(r"\{.*\}", t, re.S)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            pass
+    # 3. raw_decode 扫描（找第一个合法 JSON 对象）
+    dec = json.JSONDecoder()
+    for i in range(len(t)):
+        if t[i] == "{":
+            try:
+                obj, _ = dec.raw_decode(t[i:])
+                return obj
+            except Exception:
+                continue
+    return None
+
+
 def llm_generate(llm_api_key, base_url, model):
     """调用 DeepSeek 生成新的引流关键词/话术/AFF参数。返回 dict 或 None。"""
     prompt = (
@@ -118,25 +150,33 @@ def llm_generate(llm_api_key, base_url, model):
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.7,
-        "max_tokens": 4000,
+        "max_tokens": 8000,
     }
-    req = urllib.request.Request(
-        base_url.rstrip("/") + "/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Authorization": "Bearer " + llm_api_key},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        content = data["choices"][0]["message"]["content"]
-        # 提取 JSON（可能被 ```json 包裹）
-        m = re.search(r"\{.*\}", content, re.S)
-        if not m:
-            return None
-        return json.loads(m.group(0))
-    except Exception as e:
-        print("LLM generate failed:", e)
-        return None
+    body = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Authorization": "Bearer " + llm_api_key}
+    url = base_url.rstrip("/") + "/chat/completions"
+    last_err = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, data=body, headers=headers)
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            msg = data["choices"][0]["message"]
+            content = (msg.get("content") or "").strip()
+            # 推理模型兼容：content 为空时从 reasoning_content 提取
+            if not content:
+                content = (msg.get("reasoning_content") or "").strip()
+            # 鲁棒 JSON 提取：整个是 JSON → 正则 → 扫描式 raw_decode
+            parsed = _extract_json(content)
+            if parsed is not None:
+                return parsed
+            last_err = "no valid JSON in response"
+        except Exception as e:
+            last_err = str(e)
+        if attempt < 2:
+            print("LLM attempt %d failed (%s), retrying..." % (attempt + 1, last_err))
+    print("LLM generate failed:", last_err)
+    return None
 
 
 def merge(dst, src_list, max_len=300):
