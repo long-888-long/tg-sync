@@ -138,7 +138,9 @@ def api_call(token, method, params=None, files=None, timeout=TIMEOUT):
 # ---------------- 文本工具 ----------------
 MENTION_RE = re.compile(r"@[A-Za-z0-9_]{4,32}")
 LINK_RE = re.compile(r"(?:https?://)?(?:t\.me|telegram\.me)/[^\s]+")
-AFF_PARAM_KEYS = ("start", "startapp", "aff", "ref", "code", "invite", "rid", "uid", "promo", "from", "source")
+AFF_PARAM_KEYS = ("start", "startapp", "aff", "ref", "code", "invite", "rid", "uid", "promo", "from", "source", "clickid", "subid", "siteid", "pid", "mid", "sid", "tag", "chl", "share_ref")
+
+TRACK_PARAM_KEYS = AFF_PARAM_KEYS + ("clickid", "subid", "siteid", "pid", "mid", "sid", "tag", "chl", "share_ref", "utm_source", "utm_medium", "utm_campaign", "utm_content", "aff_sub", "aff_id", "affcode", "refcode", "invite_code", "invitecode")
 
 def _is_aff_link(link):
     """判断 t.me 链接是否带引流/AFF 跟踪参数（如 ?start=aff_xxx / ?ref=xxx / ?aff=xxx）"""
@@ -149,6 +151,28 @@ def _is_aff_link(link):
     for p in re.split(r"[&;]", query):
         key = p.split("=")[0].strip().lower()
         if key in AFF_PARAM_KEYS or "aff" in key or "ref" in key:
+            return True
+    return False
+
+
+def _is_tracking_link(link):
+    """判断任意链接是否带引流/AFF 跟踪参数（不限于 t.me），或是否为私有邀请链接。
+    - https://example.com/?ref=abc   → True
+    - https://t.me/+AbCdEf123        → True（私有邀请链接）
+    - https://t.me/hshsjk9           → False（普通公开链接）
+    - https://github.com/xxx         → False
+    """
+    m = re.match(r"(?:https?://)?([^\s?#]+)(?:\?([^\s]+))?", link, re.IGNORECASE)
+    if not m:
+        return False
+    domain = m.group(1).lower()
+    # 私有邀请链接 t.me/+xxx 或 telegram.me/+xxx
+    if re.match(r"(?:t\.me|telegram\.me)/\+", domain):
+        return True
+    query = m.group(2) or ""
+    for p in re.split(r"[&;]", query):
+        key = p.split("=")[0].strip().lower()
+        if key in TRACK_PARAM_KEYS or "aff" in key or "ref" in key:
             return True
     return False
 
@@ -182,6 +206,13 @@ HIDDEN_LINK_PATTERNS = [
     r"联系我",
     r"群(?:号|链接|二维码|入口)",
     r"拉(?:你|我)?进群",
+    # 邀请码/注册类引流话术
+    r"(?:通过|使用|输入|填写)(?:我|本人|本群|本频道)?的?(?:链接|邀请|邀请码|邀请链接)",
+    r"(?:输入|填写|使用|复制)邀请码",
+    r"注册(?:即|就|立)?(?:送|返|立减|得|领取)",
+    r"邀请码[:：]?[A-Za-z0-9_-]{3,}",
+    r"点击(?:注册|申请|领取|参与)",
+    r"(?:关注|订阅)(?:我|本|我们|频道)?(?:后|即可|领取|获取)",
 ]
 
 
@@ -256,13 +287,21 @@ def strip_trace(text, cfg):
 
 
 def contains_ad(text, extra_keywords):
-    """关键词 + aff 引流链接 + 汉字隐藏链接广告检测"""
+    """关键词 + aff/跟踪链接 + 私有邀请链接 + 汉字隐藏链接广告检测"""
     if not text:
         return False
     if contains_hidden_link_ad(text):
         return True
+    # t.me 带跟踪参数（如 ?start=aff_xxx）
     for m in re.finditer(r"(?:https?://)?(?:t\.me|telegram\.me)/[^\s?#]+\?[^\s]+", text):
         if _is_aff_link(m.group(0)):
+            return True
+    # 任意链接带跟踪参数 / 私有邀请链接 t.me/+xxx
+    for m in re.finditer(r"https?://[^\s]+", text):
+        if _is_tracking_link(m.group(0)):
+            return True
+    for m in re.finditer(r"(?:t\.me|telegram\.me)/\+[A-Za-z0-9_-]+", text):
+        if _is_tracking_link(m.group(0)):
             return True
     kw = set(AD_DEFAULT_KEYWORDS)
     kw.update(extra_keywords or [])
