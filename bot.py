@@ -778,10 +778,12 @@ def send_scraped(cfg, dest, msg):
     text = msg.get("text") or ""
     if cfg.ad_filter:
         if contains_ad(text, cfg.ad_keywords):
+            print("  [过滤] 广告关键词命中: {}".format(text[:40]))
             return None
         if cfg.ad_llm:
             j = llm_judge_ad(text, cfg)
             if j is True:
+                print("  [过滤] LLM判定广告: {}".format(text[:40]))
                 return None
     clean = strip_trace(text, cfg)
     if cfg.rewrite and clean:
@@ -834,6 +836,7 @@ def scrape_sync(cfg, state):
             continue
         latest = max(m["post_id"] for m in msgs)
         last = seen.get(username, 0)
+        print("{} 最新 #{}，上次 #{}（新消息 {} 条）".format(username, latest, last, max(0, latest - last)))
         if last == 0 and not cfg.scrape_catchup:
             seen[username] = latest
             print("{} 已初始化（最新 #{}），不搬运历史".format(username, latest))
