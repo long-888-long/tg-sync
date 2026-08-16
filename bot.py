@@ -769,27 +769,31 @@ def parse_messages(html):
             post_id = int(post.split("/")[-1])
         except Exception:
             continue
-        m = {"post_id": post_id, "text": "", "media": None, "datetime": ""}
+        m = {"post_id": post_id, "text": "", "media": None, "media_list": [], "datetime": ""}
         t = wrap.select_one("div.tgme_widget_message_text")
         if t:
             m["text"] = t.get_text("\n", strip=True)
         tm = wrap.select_one("time")
         if tm:
             m["datetime"] = tm.get("datetime", "")
-        photo = wrap.select_one("a.tgme_widget_message_photo_wrap")
-        if photo:
+        # 图片（一条消息可能多张）
+        for photo in wrap.select("a.tgme_widget_message_photo_wrap"):
             mm = re.search(r"url\(['\"]?([^'\")]+)['\"]?\)", photo.get("style", ""))
             if mm:
-                m["media"] = {"type": "photo", "url": mm.group(1)}
-        if not m["media"]:
-            video = wrap.select_one("video.tgme_widget_message_video")
-            if video and video.get("src"):
-                m["media"] = {"type": "video", "url": video["src"]}
-        if not m["media"]:
-            doc = wrap.select_one("a.tgme_widget_message_document")
-            if doc and doc.get("href"):
-                m["media"] = {"type": "document", "url": doc["href"],
-                              "fname": doc.get_text(strip=True) or "file.bin"}
+                m["media_list"].append({"type": "photo", "url": mm.group(1)})
+        # 视频（一条消息可能多个；懒加载时 src 为空，用 data-src 兜底）
+        for video in wrap.select("video.tgme_widget_message_video"):
+            url = video.get("src") or video.get("data-src")
+            if url:
+                m["media_list"].append({"type": "video", "url": url})
+        # 文件（可能多个）
+        for doc in wrap.select("a.tgme_widget_message_document"):
+            if doc.get("href"):
+                m["media_list"].append({"type": "document", "url": doc["href"],
+                                        "fname": doc.get_text(strip=True) or "file.bin"})
+        # 兼容旧字段：media = 第一个媒体
+        if m["media_list"]:
+            m["media"] = m["media_list"][0]
         out.append(m)
     return out
 
@@ -818,36 +822,42 @@ def send_scraped(cfg, dest, msg):
         clean = llm_rewrite(clean, cfg)
         clean = strip_trace(clean, cfg)
     caption = build_caption(clean) if clean else None
-    media = msg.get("media")
-    if media is None:
+    media_list = msg.get("media_list") or ([msg["media"]] if msg.get("media") else [])
+    if not media_list:
         if not clean:
             # 原消息为纯链接/提及（被防溯源清洗删光），或 LLM 改写后为空：跳过不搬运
             print("跳过空内容消息（清洗后无正文）")
             return None
         r = send_text(cfg, dest, clean)
         return r["result"]["message_id"] if r.get("ok") else None
-    try:
-        raw = fetch_url_bytes(media["url"])
-    except Exception:
-        print("媒体下载失败: {}".format(media["url"]))
-        return None
-    mtype = media["type"]
-    if mtype == "photo":
-        if cfg.wm_mode != "off":
-            raw = process_media_bytes(raw, cfg, kind="photo")
-        r = send_photo(cfg, dest, raw, caption)
-    elif mtype == "video":
-        if cfg.wm_mode != "off":
-            raw = process_media_bytes(raw, cfg, kind="video")
-        print("  [发送视频] caption={}".format(repr(caption)))
-        r = send_video(cfg, dest, raw, caption)
-        if r.get("ok"):
-            print("  [视频发送成功] message_id={}".format(r["result"]["message_id"]))
+    # 逐个发送所有媒体（多视频/多图片/混合），caption 只挂第一个
+    first_mid = None
+    for i, media in enumerate(media_list):
+        try:
+            raw = fetch_url_bytes(media["url"])
+        except Exception:
+            print("媒体下载失败: {}".format(media["url"]))
+            continue
+        cap = caption if i == 0 else None
+        mtype = media["type"]
+        if mtype == "photo":
+            if cfg.wm_mode != "off":
+                raw = process_media_bytes(raw, cfg, kind="photo")
+            r = send_photo(cfg, dest, raw, cap)
+        elif mtype == "video":
+            if cfg.wm_mode != "off":
+                raw = process_media_bytes(raw, cfg, kind="video")
+            print("  [发送视频] caption={}".format(repr(cap)))
+            r = send_video(cfg, dest, raw, cap)
+            if r.get("ok"):
+                print("  [视频发送成功] message_id={}".format(r["result"]["message_id"]))
+            else:
+                print("  [视频发送失败] {} {}".format(r.get("error_code"), r.get("description")))
         else:
-            print("  [视频发送失败] {} {}".format(r.get("error_code"), r.get("description")))
-    else:
-        r = send_document(cfg, dest, raw, media.get("fname", "file.bin"), caption)
-    return r["result"]["message_id"] if r.get("ok") else None
+            r = send_document(cfg, dest, raw, media.get("fname", "file.bin"), cap)
+        if r.get("ok") and first_mid is None:
+            first_mid = r["result"]["message_id"]
+    return first_mid
 
 
 def scrape_sync(cfg, state):
