@@ -30,7 +30,7 @@ try:
 except Exception:
     HAS_BS4 = False
 
-VERSION = "2.6"
+VERSION = "2.7"
 API = "https://api.telegram.org/bot{token}/{method}"
 TIMEOUT = 60
 
@@ -53,7 +53,7 @@ class Config:
         self.llm_api_key = os.environ.get("LLM_API_KEY", "").strip()
         self.llm_base_url = (os.environ.get("LLM_BASE_URL", "https://api.deepseek.com").strip().rstrip("/"))
         self.llm_model = os.environ.get("LLM_MODEL", "deepseek-chat").strip()
-        self.llm_timeout = float(os.environ.get("LLM_TIMEOUT", "30") or 30)
+        self.llm_timeout = float(os.environ.get("LLM_TIMEOUT", "60") or 60)  # 推理模型需要更长超时
         self.state_file = os.environ.get("STATE_FILE", "state.json").strip()
         self.workflow = os.environ.get("WORKFLOW", "").strip()
         self.replace_mentions = os.environ.get("REPLACE_MENTIONS", "").strip()
@@ -368,7 +368,11 @@ def llm_judge_ad(text, cfg):
         return None
     sys_p = "你是广告内容审核助手。判断以下消息是否为广告/营销/推广内容。只回答：广告 或 非广告。"
     try:
-        return _llm_call(cfg, sys_p, text) == "广告"
+        out = _llm_call(cfg, sys_p, text)
+        # 兼容 LLM 输出带标点/换行/前后缀（如"广告。""结论：广告"）
+        if not out:
+            return None
+        return "广告" in out and "非广告" not in out
     except Exception:
         return None
 
@@ -397,8 +401,9 @@ def _valid_rewrite(out):
     """校验 LLM 改写输出是否可用：非空、不是思考过程/拒绝语/应答腔。"""
     if not out:
         return False
-    bad = ("请提供", "原文", "无法", "不能", "需要你", "请发送", "请把", "根据你的要求",
-           "思考", "reasoning", "作为AI", "作为 AI", "很抱歉", "抱歉")
+    bad = ("请提供", "提供原文", "无法改写", "不能改写", "需要你提供", "请发送原文", "请把原文",
+           "根据你的要求", "思考过程", "reasoning", "作为AI", "作为 AI", "很抱歉", "抱歉")
+    # 注：不用裸词"原文"，避免误伤正文本身含"原文"的正常改写结果
     for b in bad:
         if b in out:
             return False
@@ -542,8 +547,36 @@ def process_media_bytes(raw, cfg, kind="photo"):
 
 
 def process_video_bytes(raw, cfg):
-    """视频水印：用 ffmpeg 裁剪底部。失败返回原字节。"""
-    if cfg.wm_mode not in ("crop_bottom", "crop_corner"):
+    """视频水印：用 ffmpeg 裁剪底部。失败返回原字节。
+    remove（智能修复）对视频不可行，自动降级为 crop_bottom 裁剪兜底。"""
+    mode = cfg.wm_mode
+    if mode == "remove":
+        mode = "crop_bottom"  # 视频无法 inpaint，裁剪兜底
+    if mode not in ("crop_bottom", "crop_corner"):
+        return raw
+    vf = ("crop=in_w:in_h*%.2f:0:0" % (1 - cfg.wm_amount)) if mode == "crop_bottom" \
+        else ("crop=in_w*%.2f:in_h*%.2f:0:0" % (1 - cfg.wm_amount, 1 - cfg.wm_amount))
+    try:
+        import subprocess
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".in.mp4", delete=False) as fi:
+            fi.write(raw)
+            in_path = fi.name
+        out_path = in_path.replace(".in.mp4", ".out.mp4")
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-i", in_path, "-vf", vf, "-c:v", "libx264",
+             "-preset", "veryfast", "-crf", "28", "-c:a", "copy", out_path],
+            capture_output=True, timeout=180,
+        )
+        if r.returncode == 0 and os.path.exists(out_path):
+            with open(out_path, "rb") as fo:
+                data = fo.read()
+            os.unlink(in_path)
+            os.unlink(out_path)
+            return data
+        os.unlink(in_path)
+        return raw
+    except Exception:
         return raw
     try:
         import subprocess
