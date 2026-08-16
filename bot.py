@@ -839,7 +839,12 @@ def send_scraped(cfg, dest, msg):
     elif mtype == "video":
         if cfg.wm_mode != "off":
             raw = process_media_bytes(raw, cfg, kind="video")
+        print("  [发送视频] caption={}".format(repr(caption)))
         r = send_video(cfg, dest, raw, caption)
+        if r.get("ok"):
+            print("  [视频发送成功] message_id={}".format(r["result"]["message_id"]))
+        else:
+            print("  [视频发送失败] {} {}".format(r.get("error_code"), r.get("description")))
     else:
         r = send_document(cfg, dest, raw, media.get("fname", "file.bin"), caption)
     return r["result"]["message_id"] if r.get("ok") else None
