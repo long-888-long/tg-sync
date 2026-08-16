@@ -28,6 +28,8 @@ class Cfg:
     dest = ["@Pinwin_3"]
     state_file = "state.json"
     scrape_catchup = False
+    replace_mentions = ""
+    footer_remove = True
 
 cfg = Cfg()
 
