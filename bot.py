@@ -769,7 +769,9 @@ def parse_messages(html):
             post_id = int(post.split("/")[-1])
         except Exception:
             continue
-        m = {"post_id": post_id, "text": "", "media": None, "media_list": [], "datetime": ""}
+        m = {"post_id": post_id, "text": "", "media": None, "media_list": [], "datetime": "",
+                "post_url": "https://t.me/{}/{}".format(username, post_id),
+                "has_video_player": False}
         t = wrap.select_one("div.tgme_widget_message_text")
         if t:
             m["text"] = t.get_text("\n", strip=True)
@@ -791,6 +793,9 @@ def parse_messages(html):
             if doc.get("href"):
                 m["media_list"].append({"type": "document", "url": doc["href"],
                                         "fname": doc.get_text(strip=True) or "file.bin"})
+        # 检测 video_player 链接（预览页占位时媒体缺失，需用 embed 页兜底）
+        if wrap.select_one("a.tgme_widget_message_video_player"):
+            m["has_video_player"] = True
         # 兼容旧字段：media = 第一个媒体
         if m["media_list"]:
             m["media"] = m["media_list"][0]
@@ -803,6 +808,23 @@ def fetch_url_bytes(url):
     req = urllib.request.Request(url, headers={"User-Agent": SCRAPE_UA})
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
         return resp.read()
+
+def fetch_embed_media(username, post_id):
+    """预览页占位时，用单条消息 embed 页兜底提取媒体 URL 列表"""
+    url = "https://t.me/{}/{}?embed=1".format(username, post_id)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        html = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "ignore")
+    except Exception:
+        return []
+    out = []
+    for m in re.finditer(r'<video[^>]*src="([^"]+)"', html):
+        out.append({"type": "video", "url": m.group(1)})
+    for m in re.finditer(r'<a class="tgme_widget_message_photo_wrap"[^>]*style="[^"]*url\([\'"]?([^\'")]+)', html):
+        out.append({"type": "photo", "url": m.group(1)})
+    return out
+
+
 
 
 def send_scraped(cfg, dest, msg):
@@ -823,6 +845,16 @@ def send_scraped(cfg, dest, msg):
         clean = strip_trace(clean, cfg)
     caption = build_caption(clean) if clean else None
     media_list = msg.get("media_list") or ([msg["media"]] if msg.get("media") else [])
+    if not media_list and msg.get("has_video_player"):
+        # 预览页占位（媒体未渲染）：用 embed 页兜底提取
+        try:
+            username = msg["post_url"].split("/")[-2]
+            post_id = msg["post_id"]
+            media_list = fetch_embed_media(username, post_id)
+            if media_list:
+                print("  [embed兜底] 从 embed 页提取到 {} 个媒体".format(len(media_list)))
+        except Exception:
+            media_list = []
     if not media_list:
         if not clean:
             # 原消息为纯链接/提及（被防溯源清洗删光），或 LLM 改写后为空：跳过不搬运
