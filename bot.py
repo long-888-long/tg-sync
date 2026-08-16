@@ -30,7 +30,7 @@ try:
 except Exception:
     HAS_BS4 = False
 
-VERSION = "2.7"
+VERSION = "2.8"
 API = "https://api.telegram.org/bot{token}/{method}"
 TIMEOUT = 60
 
@@ -372,7 +372,11 @@ def llm_judge_ad(text, cfg):
         # 兼容 LLM 输出带标点/换行/前后缀（如"广告。""结论：广告"）
         if not out:
             return None
-        return "广告" in out and "非广告" not in out
+        out_l = out.strip().lower()
+        # 否定语义优先："非广告"/"不是广告"/"不广告" → 非广告
+        if "非广告" in out_l or "不是广告" in out_l or "不是" in out_l or "不广告" in out_l:
+            return False
+        return "广告" in out_l
     except Exception:
         return None
 
@@ -578,34 +582,6 @@ def process_video_bytes(raw, cfg):
         return raw
     except Exception:
         return raw
-    try:
-        import subprocess
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".in.mp4", delete=False) as fi:
-            fi.write(raw)
-            in_path = fi.name
-        out_path = in_path.replace(".in.mp4", ".out.mp4")
-        if cfg.wm_mode == "crop_bottom":
-            vf = "crop=in_w:in_h*%.2f:0:0" % (1 - cfg.wm_amount)
-        else:
-            vf = "crop=in_w*%.2f:in_h*%.2f:0:0" % (1 - cfg.wm_amount, 1 - cfg.wm_amount)
-        r = subprocess.run(
-            ["ffmpeg", "-y", "-i", in_path, "-vf", vf, "-c:v", "libx264",
-             "-preset", "veryfast", "-crf", "28", "-c:a", "copy", out_path],
-            capture_output=True, timeout=120,
-        )
-        if r.returncode == 0 and os.path.exists(out_path):
-            with open(out_path, "rb") as fo:
-                data = fo.read()
-            os.unlink(in_path)
-            os.unlink(out_path)
-            return data
-        os.unlink(in_path)
-        return raw
-    except Exception:
-        return raw
-
-
 # ---------------- 消息搬运 ----------------
 def resolve_chat(cfg, cid):
     r = api_call(cfg.token, "getChat", {"chat_id": cid})
