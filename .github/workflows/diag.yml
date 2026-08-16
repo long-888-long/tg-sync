@@ -1,0 +1,15 @@
+name: Diag-Video-Caption
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install beautifulsoup4 -q
+      - run: python diag.py dny8837
+      - run: python diag.py stymei1
