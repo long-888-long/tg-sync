@@ -871,6 +871,9 @@ def scrape_sync(cfg, state):
             continue
         new_msgs = sorted([m for m in msgs if m["post_id"] > last], key=lambda x: x["post_id"])
         for m in new_msgs:
+            # 防重复保险：跳过本次运行中已处理的 post（并发场景双保险）
+            if m["post_id"] <= seen.get(username, 0):
+                continue
             sent = False
             for dest in cfg.dest:
                 mid = send_scraped(cfg, dest, m)
@@ -879,7 +882,9 @@ def scrape_sync(cfg, state):
                     total += 1
             if sent:
                 print("已搬运 {} #{} ({})".format(username, m["post_id"], m["datetime"] or "?"))
+            # 立即更新 seen 并保存，防止并发/中断导致重复搬运
             seen[username] = max(seen.get(username, 0), m["post_id"])
+            save_state(cfg, state)
     save_state(cfg, state)
     print("本次抓取搬运 {} 条".format(total))
     return total
