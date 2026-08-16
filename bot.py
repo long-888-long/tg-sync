@@ -384,9 +384,31 @@ def llm_rewrite(text, cfg):
         "3.语言简洁自然，不增删事实。直接输出改写后的内容，不要任何解释。"
     )
     try:
-        return _llm_call(cfg, sys_p, text)
+        out = _llm_call(cfg, sys_p, text)
+        if _valid_rewrite(out):
+            return out
+        print("LLM 改写输出无效，降级用原文")
+        return strip_trace(text, cfg)
     except Exception:
         return strip_trace(text, cfg)
+
+
+def _valid_rewrite(out):
+    """校验 LLM 改写输出是否可用：非空、不是思考过程/拒绝语/应答腔。"""
+    if not out:
+        return False
+    bad = ("请提供", "原文", "无法", "不能", "需要你", "请发送", "请把", "根据你的要求",
+           "思考", "reasoning", "作为AI", "作为 AI", "很抱歉", "抱歉")
+    for b in bad:
+        if b in out:
+            return False
+    # 应答腔开头（AI 客套话而非改写结果）
+    bad_prefix = ("好的，我来", "好的,我来", "没问题，", "没问题,", "可以的，", "可以的,",
+                  "我来帮你", "我帮你", "我可以", "当然可以", "好的！", "好的!")
+    for p in bad_prefix:
+        if out.startswith(p):
+            return False
+    return True
 
 
 def _llm_call(cfg, sys_p, user_msg):
@@ -398,7 +420,7 @@ def _llm_call(cfg, sys_p, user_msg):
             {"role": "user", "content": user_msg},
         ],
         "temperature": 0.3,
-        "max_tokens": 3000,
+        "max_tokens": 8000,
     }
     req = urllib.request.Request(
         url,
@@ -413,9 +435,6 @@ def _llm_call(cfg, sys_p, user_msg):
         data = json.loads(resp.read().decode("utf-8"))
     msg = data["choices"][0]["message"]
     text = (msg.get("content") or "").strip()
-    # 推理模型兼容：content 为空时从 reasoning_content 提取
-    if not text:
-        text = (msg.get("reasoning_content") or "").strip()
     return text
 
 
