@@ -766,7 +766,9 @@ def parse_messages(html):
     for wrap in soup.select("div.tgme_widget_message"):
         post = wrap.get("data-post", "")
         try:
-            post_id = int(post.split("/")[-1])
+            _parts = post.split("/")
+            username = _parts[0]
+            post_id = int(_parts[-1])
         except Exception:
             continue
         m = {"post_id": post_id, "text": "", "media": None, "media_list": [], "datetime": "",
