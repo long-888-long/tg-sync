@@ -421,6 +421,7 @@ def _valid_rewrite(out):
 
 
 def _llm_call(cfg, sys_p, user_msg):
+    """调用 LLM，带重试机制（最多 3 次）。返回 content 文本；失败返回空字符串。"""
     url = cfg.llm_base_url + "/chat/completions"
     payload = {
         "model": cfg.llm_model,
@@ -431,20 +432,32 @@ def _llm_call(cfg, sys_p, user_msg):
         "temperature": 0.3,
         "max_tokens": 8000,
     }
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": "Bearer " + cfg.llm_api_key,
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=cfg.llm_timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    msg = data["choices"][0]["message"]
-    text = (msg.get("content") or "").strip()
-    return text
+    last_err = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer " + cfg.llm_api_key,
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=cfg.llm_timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            msg = data["choices"][0]["message"]
+            text = (msg.get("content") or "").strip()
+            if text:
+                return text
+            print("LLM 第 {} 次尝试返回空内容，重试".format(attempt + 1))
+        except Exception as e:
+            last_err = e
+            print("LLM 第 {} 次尝试失败: {}".format(attempt + 1, e))
+        time.sleep(2)
+    if last_err:
+        print("LLM 调用最终失败: {}".format(last_err))
+    return ""
 
 
 # ---------------- 图片水印处理 ----------------
