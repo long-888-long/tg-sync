@@ -993,6 +993,7 @@ def scrape_sync(cfg, state):
                     total += 1
             if sent:
                 print("已搬运 {} #{} ({})".format(username, m["post_id"], m["datetime"] or "?"))
+                state["_changed"] = True
             # 立即更新 seen 并保存，防止并发/中断导致重复搬运
             seen[username] = max(seen.get(username, 0), m["post_id"])
             save_state(cfg, state)
@@ -1151,9 +1152,14 @@ def main():
         except Exception as e:
             print("拉取远端 state 失败（继续用本地）: {}".format(e))
         scrape_sync(cfg, state)
-        if not push_state_github(cfg, state):
-            print("FATAL: state 未同步到 GitHub，为避免重复搬运，本次运行标记为失败")
-            sys.exit(1)
+        # 只有实际搬运了消息（state 有变化）才需要同步 state
+        # 无新消息时跳过同步，避免 GitHub API 503 导致误报 failure
+        if state.get("_changed"):
+            if not push_state_github(cfg, state):
+                print("FATAL: state 未同步到 GitHub，为避免重复搬运，本次运行标记为失败")
+                sys.exit(1)
+        else:
+            print("无新消息，跳过 state 同步")
         return
     offset = int(state.get("offset", 0))
     if cfg.workflow == "init":
