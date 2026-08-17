@@ -1061,7 +1061,7 @@ def push_state_github(cfg, state):
         return False
     branch = os.environ.get("GITHUB_REF_NAME", "main")
     url = "https://api.github.com/repos/{}/contents/{}".format(repo, cfg.state_file)
-    for attempt in range(3):
+    for attempt in range(6):
         try:
             # 拉取最新 state（获取 sha + 远端内容）
             req = urllib.request.Request(url + "?ref=" + branch,
@@ -1090,15 +1090,17 @@ def push_state_github(cfg, state):
             print("state 已同步到 GitHub ✅")
             return True
         except urllib.error.HTTPError as e:
-            if e.code == 409:
-                print("state 冲突，重试 {}/3".format(attempt + 1))
-                time.sleep(2)
+            if e.code in (409, 503, 500, 502, 504):
+                # 冲突或 GitHub 服务不稳定：退避重试（2s,4s,8s,16s,32s）
+                print("state 同步 {}，重试 {}/6".format(e.code, attempt + 1))
+                time.sleep(2 * (attempt + 1))
                 continue
             print("state 同步失败: HTTP {}".format(e.code))
             return False
         except Exception as e:
             print("state 同步失败: {}".format(e))
-            return False
+            time.sleep(2 * (attempt + 1))
+            continue
     return False
 
 
