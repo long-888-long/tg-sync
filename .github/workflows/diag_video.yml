@@ -2,6 +2,9 @@ name: DiagVideo
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   diag:
     runs-on: ubuntu-latest
