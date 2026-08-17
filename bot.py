@@ -819,10 +819,17 @@ def parse_messages(html):
 
 
 def fetch_url_bytes(url):
-    """下载媒体原始字节（用于去水印重传）"""
-    req = urllib.request.Request(url, headers={"User-Agent": SCRAPE_UA})
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-        return resp.read()
+    """下载媒体原始字节（用于去水印重传）。带 3 次重试，防止 CDN 临时失效导致视频丢失。"""
+    last_err = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": SCRAPE_UA})
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+                return resp.read()
+        except Exception as e:
+            last_err = e
+            time.sleep(2 * (attempt + 1))  # 2s, 4s, 6s 退避
+    raise last_err if last_err else Exception("download failed")
 
 def fetch_embed_media(username, post_id):
     """预览页占位时，用单条消息 embed 页兜底提取媒体 URL 列表"""
@@ -840,7 +847,8 @@ def fetch_embed_media(username, post_id):
             out.append({"type": "video", "url": m.group(1)})
     for m in re.finditer(r'<a class="tgme_widget_message_video_player"[^>]*href="([^"]+)"', html):
         href = m.group(1)
-        if not any(x["url"] == href for x in out):
+        # 只保留真实视频文件链接（.mp4/.m4v/.webm/.mov），过滤消息页链接
+        if re.search(r'\.(mp4|m4v|webm|mov)(\?|$)', href, re.I) and not any(x["url"] == href for x in out):
             out.append({"type": "video", "url": href})
     for m in re.finditer(r'<a class="tgme_widget_message_photo_wrap"[^>]*style="[^"]*url\([\'"]?([^\'")]+)', html):
         out.append({"type": "photo", "url": m.group(1)})
@@ -974,8 +982,13 @@ def scrape_sync(cfg, state):
             continue
         new_msgs = sorted([m for m in msgs if m["post_id"] > last], key=lambda x: x["post_id"])
         # 检测消息号跳跃（预览页缺失的消息，如 6666->6668 缺 6667）：用 embed 页兜底
-        if new_msgs and new_msgs[0]["post_id"] > last + 1:
-            for pid in range(last + 1, new_msgs[0]["post_id"]):
+        # 补全所有空隙（不只第一个），防止多个缺失消息漏搬
+        if new_msgs:
+            max_new = max(m["post_id"] for m in new_msgs)
+            existing = set(m["post_id"] for m in new_msgs)
+            for pid in range(last + 1, max_new):
+                if pid in existing:
+                    continue
                 em = fetch_embed_message(username, pid)
                 if em:
                     print("  [embed补漏] 预览页缺失 #{}，embed 页提取到内容".format(pid))
