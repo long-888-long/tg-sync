@@ -757,7 +757,7 @@ def edit_sync(cfg, edit, state):
     return updated
 
 
-# ---------------- 公开频道抓取搬运（MODE=scrape） ----------------
+# ---------------- 公��频道抓取搬运（MODE=scrape） ----------------
 SCRAPE_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
              "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
@@ -835,6 +835,13 @@ def fetch_embed_media(username, post_id):
     out = []
     for m in re.finditer(r'<video[^>]*src="([^"]+)"', html):
         out.append({"type": "video", "url": m.group(1)})
+    for m in re.finditer(r'<video[^>]*data-src="([^"]+)"', html):
+        if not any(x["url"] == m.group(1) for x in out):
+            out.append({"type": "video", "url": m.group(1)})
+    for m in re.finditer(r'<a class="tgme_widget_message_video_player"[^>]*href="([^"]+)"', html):
+        href = m.group(1)
+        if not any(x["url"] == href for x in out):
+            out.append({"type": "video", "url": href})
     for m in re.finditer(r'<a class="tgme_widget_message_photo_wrap"[^>]*style="[^"]*url\([\'"]?([^\'")]+)', html):
         out.append({"type": "photo", "url": m.group(1)})
     return out
@@ -856,6 +863,13 @@ def fetch_embed_message(username, post_id):
     media_list = []
     for m in re.finditer(r'<video[^>]*src="([^"]+)"', html):
         media_list.append({"type": "video", "url": m.group(1)})
+    for m in re.finditer(r'<video[^>]*data-src="([^"]+)"', html):
+        if not any(x["url"] == m.group(1) for x in media_list):
+            media_list.append({"type": "video", "url": m.group(1)})
+    for m in re.finditer(r'<a class="tgme_widget_message_video_player"[^>]*href="([^"]+)"', html):
+        href = m.group(1)
+        if not any(x["url"] == href for x in media_list):
+            media_list.append({"type": "video", "url": href})
     for m in re.finditer(r'<a class="tgme_widget_message_photo_wrap"[^>]*style="[^"]*url\([\'"]?([^\'")]+)', html):
         media_list.append({"type": "photo", "url": m.group(1)})
     for m in re.finditer(r'<a class="tgme_widget_message_document"[^>]*href="([^"]+)"[^>]*>', html):
@@ -1101,7 +1115,7 @@ def main():
     for c in (cfg.dest if cfg.mode == "scrape" else cfg.source + cfg.dest):
         name = resolve_chat(cfg, c)
         if name is None:
-            print("警告: 无法访问 {}（机器人不在其中或无权限）".format(c))
+            print("警���: 无法访问 {}（机器人不在其中或无权限）".format(c))
     state = load_state(cfg)
     if cfg.mode == "scrape":
         print("抓取模式: 源频道无需机器人加入，直接读取公开预览页")
