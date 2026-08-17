@@ -1018,6 +1018,25 @@ def save_state(cfg, state):
         pass
 
 
+def fetch_remote_state(cfg):
+    """从 GitHub 拉取最新 state.json（用于运行前合并，防并发重复）。"""
+    token = os.environ.get("GITHUB_TOKEN", "")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    if not token or not repo:
+        return None
+    branch = os.environ.get("GITHUB_REF_NAME", "main")
+    url = "https://api.github.com/repos/{}/contents/{}?ref={}".format(repo, cfg.state_file, branch)
+    try:
+        req = urllib.request.Request(url,
+            headers={"Authorization": "Bearer " + token, "User-Agent": "tg-sync",
+                     "Accept": "application/vnd.github+json"})
+        resp = urllib.request.urlopen(req, timeout=30)
+        j = json.loads(resp.read().decode("utf-8"))
+        return json.loads(base64.b64decode(j["content"]).decode("utf-8"))
+    except Exception:
+        return None
+
+
 def push_state_github(cfg, state):
     """用 GitHub API 原子更新 state.json（防重复搬运核心）。
     带 sha 冲突检测 + max 合并，失败时返回 False。"""
@@ -1119,6 +1138,18 @@ def main():
     state = load_state(cfg)
     if cfg.mode == "scrape":
         print("抓取模式: 源频道无需机器人加入，直接读取公开预览页")
+        # 双保险：运行前从 GitHub 拉取最新 state（防止并发时读到旧 state）
+        try:
+            fresh = fetch_remote_state(cfg)
+            if fresh:
+                # 合并：取 max，保留本地可能更新的进度
+                rseen = fresh.get("scrape_seen", {})
+                lseen = state.setdefault("scrape_seen", {})
+                for k, v in rseen.items():
+                    lseen[k] = max(lseen.get(k, 0), v)
+                print("已从 GitHub 拉取最新 state 合并")
+        except Exception as e:
+            print("拉取远端 state 失败（继续用本地）: {}".format(e))
         scrape_sync(cfg, state)
         if not push_state_github(cfg, state):
             print("FATAL: state 未同步到 GitHub，为避免重复搬运，本次运行标记为失败")
