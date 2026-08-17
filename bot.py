@@ -991,6 +991,57 @@ def save_state(cfg, state):
         pass
 
 
+def push_state_github(cfg, state):
+    """用 GitHub API 原子更新 state.json（防重复搬运核心）。
+    带 sha 冲突检测 + max 合并，失败时返回 False。"""
+    token = os.environ.get("GITHUB_TOKEN", "")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    if not token or not repo:
+        print("警告: 无 GITHUB_TOKEN，state 仅保存在本地（下次运行可能重复搬运）")
+        return False
+    branch = os.environ.get("GITHUB_REF_NAME", "main")
+    url = "https://api.github.com/repos/{}/contents/{}".format(repo, cfg.state_file)
+    for attempt in range(3):
+        try:
+            # 拉取最新 state（获取 sha + 远端内容）
+            req = urllib.request.Request(url + "?ref=" + branch,
+                headers={"Authorization": "Bearer " + token, "User-Agent": "tg-sync",
+                         "Accept": "application/vnd.github+json"})
+            resp = urllib.request.urlopen(req, timeout=30)
+            j = json.loads(resp.read().decode("utf-8"))
+            sha = j["sha"]
+            remote = json.loads(base64.b64decode(j["content"]).decode("utf-8"))
+            # 合并：取 max（并发时防止覆盖对方进度）
+            merged = json.loads(json.dumps(state))
+            rseen = remote.get("scrape_seen", {})
+            mseen = merged.setdefault("scrape_seen", {})
+            for k, v in rseen.items():
+                mseen[k] = max(mseen.get(k, 0), v)
+            # PUT 更新
+            body = json.dumps({
+                "message": "sync state [skip ci]",
+                "content": base64.b64encode(json.dumps(merged, ensure_ascii=False, indent=2).encode("utf-8")).decode("utf-8"),
+                "sha": sha
+            }).encode("utf-8")
+            req2 = urllib.request.Request(url, data=body, method="PUT",
+                headers={"Authorization": "Bearer " + token, "User-Agent": "tg-sync",
+                         "Content-Type": "application/json", "Accept": "application/vnd.github+json"})
+            resp2 = urllib.request.urlopen(req2, timeout=30)
+            print("state 已同步到 GitHub ✅")
+            return True
+        except urllib.error.HTTPError as e:
+            if e.code == 409:
+                print("state 冲突，重试 {}/3".format(attempt + 1))
+                time.sleep(2)
+                continue
+            print("state 同步失败: HTTP {}".format(e.code))
+            return False
+        except Exception as e:
+            print("state 同步失败: {}".format(e))
+            return False
+    return False
+
+
 def get_updates(cfg, offset):
     r = api_call(cfg.token, "getUpdates", {"offset": offset, "timeout": 5, "allowed_updates": json.dumps(["message", "edited_message", "channel_post", "edited_channel_post"])})
     return r
@@ -1042,6 +1093,9 @@ def main():
     if cfg.mode == "scrape":
         print("抓取模式: 源频道无需机器人加入，直接读取公开预览页")
         scrape_sync(cfg, state)
+        if not push_state_github(cfg, state):
+            print("FATAL: state 未同步到 GitHub，为避免重复搬运，本次运行标记为失败")
+            sys.exit(1)
         return
     offset = int(state.get("offset", 0))
     if cfg.workflow == "init":
