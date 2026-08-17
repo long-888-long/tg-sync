@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""验证修复后的三层提取逻辑：抓 #6668 和 #6672 的 embed 页，确认能提取到视频"""
+"""诊断：打印 #6668 embed 页 HTML 中所有 video/player/media 相关片段"""
 import re
 import json
 import os
@@ -13,41 +13,27 @@ def fetch(url):
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     return urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "ignore")
 
-def extract_media(html):
-    """模拟修复后的三层提取"""
-    out = []
-    for m in re.finditer(r'<video[^>]*src="([^"]+)"', html):
-        out.append({"type": "video", "url": m.group(1)})
-    for m in re.finditer(r'<video[^>]*data-src="([^"]+)"', html):
-        if not any(x["url"] == m.group(1) for x in out):
-            out.append({"type": "video", "url": m.group(1)})
-    for m in re.finditer(r'<a class="tgme_widget_message_video_player"[^>]*href="([^"]+)"', html):
-        href = m.group(1)
-        if not any(x["url"] == href for x in out):
-            out.append({"type": "video", "url": href})
-    return out
-
 result = []
 for pid in [6668, 6672]:
     url = "https://t.me/dny8837/{}?embed=1".format(pid)
     try:
         html = fetch(url)
-        media = extract_media(html)
-        result.append("post #{}: {} media extracted".format(pid, len(media)))
-        for m in media:
-            result.append("  {}: {}".format(m["type"], m["url"][:90]))
-        # 也检查文字
-        tm = re.search(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', html, re.S)
-        if tm:
-            text = re.sub(r'<[^>]+>', '', tm.group(1)).strip()
-            result.append("  text: {}".format(text[:60]))
+        result.append("=== post #{} embed page size: {} ===".format(pid, len(html)))
+        # 找所有 video/player/media 相关片段
+        for m in re.finditer(r'.{0,80}(?:video|player|media|src=|data-src).{0,120}', html, re.I):
+            snippet = m.group(0).replace('\n', ' ')
+            result.append("  ...{}...".format(snippet[:220]))
+        # 检查是否有 tgme_widget_message_video_player
+        result.append("  has video_player class: {}".format('tgme_widget_message_video_player' in html))
+        result.append("  has <video: {}".format('<video' in html))
+        result.append("  has tgme_widget_message_photo_wrap: {}".format('tgme_widget_message_photo_wrap' in html))
+        result.append("  has text_not_supported: {}".format('text_not_supported' in html))
     except Exception as e:
         result.append("post #{}: ERROR {}".format(pid, e))
 
 out = "\n".join(result)
 print(out)
 
-# 写回仓库
 gh_token = os.environ.get("GITHUB_TOKEN", "")
 if gh_token:
     try:
