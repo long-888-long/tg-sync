@@ -1051,6 +1051,31 @@ def fetch_remote_state(cfg):
         return None
 
 
+def _push_state_git(cfg, state):
+    """contents API 失败时，降级用 git 提交 state（git 协议比 contents API 稳定）"""
+    try:
+        import subprocess
+        # 先拉取最新 state（避免覆盖他人进度）
+        subprocess.run(["git", "pull", "--rebase", "origin", "main"],
+                       capture_output=True, timeout=60)
+        # 写入本地 state.json
+        with open(cfg.state_file, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        subprocess.run(["git", "add", cfg.state_file], capture_output=True, timeout=30)
+        subprocess.run(["git", "commit", "-m", "sync state [skip ci]"],
+                       capture_output=True, timeout=30)
+        r = subprocess.run(["git", "push", "origin", "main"],
+                           capture_output=True, timeout=60)
+        if r.returncode == 0:
+            print("state 已通过 git 同步到 GitHub ✅")
+            return True
+        print("git push 失败: {}".format(r.stderr.decode("utf-8", "ignore")[:200]))
+        return False
+    except Exception as e:
+        print("git 同步失败: {}".format(e))
+        return False
+
+
 def push_state_github(cfg, state):
     """用 GitHub API 原子更新 state.json（防重复搬运核心）。
     带 sha 冲突检测 + max 合并，失败时返回 False。"""
@@ -1096,12 +1121,13 @@ def push_state_github(cfg, state):
                 time.sleep(2 * (attempt + 1))
                 continue
             print("state 同步失败: HTTP {}".format(e.code))
-            return False
+            return _push_state_git(cfg, state)
         except Exception as e:
             print("state 同步失败: {}".format(e))
             time.sleep(2 * (attempt + 1))
             continue
-    return False
+    # contents API 全部失败，降级用 git 提交
+    return _push_state_git(cfg, state)
 
 
 def get_updates(cfg, offset):
