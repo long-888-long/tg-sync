@@ -828,6 +828,33 @@ def fetch_embed_media(username, post_id):
 
 
 
+def fetch_embed_message(username, post_id):
+    """抓单条消息 embed 页，提取文字 + 媒体列表（预览页缺失消息的兜底）"""
+    url = "https://t.me/{}/{}?embed=1".format(username, post_id)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        html = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "ignore")
+    except Exception:
+        return None
+    text = ""
+    tm = re.search(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', html, re.S)
+    if tm:
+        text = re.sub(r"<[^>]+>", "", tm.group(1)).strip()
+    media_list = []
+    for m in re.finditer(r'<video[^>]*src="([^"]+)"', html):
+        media_list.append({"type": "video", "url": m.group(1)})
+    for m in re.finditer(r'<a class="tgme_widget_message_photo_wrap"[^>]*style="[^"]*url\([\'"]?([^\'")]+)', html):
+        media_list.append({"type": "photo", "url": m.group(1)})
+    for m in re.finditer(r'<a class="tgme_widget_message_document"[^>]*href="([^"]+)"[^>]*>', html):
+        media_list.append({"type": "document", "url": m.group(1), "fname": "file.bin"})
+    if not text and not media_list:
+        return None
+    return {"post_id": post_id, "text": text, "media": media_list[0] if media_list else None,
+            "media_list": media_list, "datetime": "", "post_url": url,
+            "has_video_player": bool(media_list)}
+
+
+
 
 def send_scraped(cfg, dest, msg):
     """把抓取到的消息发送到目标频道。返回 message_id 或 None（被过滤/失败）"""
@@ -919,6 +946,14 @@ def scrape_sync(cfg, state):
             print("{} 已初始化（最新 #{}），不搬运历史".format(username, latest))
             continue
         new_msgs = sorted([m for m in msgs if m["post_id"] > last], key=lambda x: x["post_id"])
+        # 检测消息号跳跃（预览页缺失的消息，如 6666->6668 缺 6667）：用 embed 页兜底
+        if new_msgs and new_msgs[0]["post_id"] > last + 1:
+            for pid in range(last + 1, new_msgs[0]["post_id"]):
+                em = fetch_embed_message(username, pid)
+                if em:
+                    print("  [embed补漏] 预览页缺失 #{}，embed 页提取到内容".format(pid))
+                    new_msgs.append(em)
+            new_msgs.sort(key=lambda x: x["post_id"])
         for m in new_msgs:
             # 防重复保险：跳过本次运行中已处理的 post（并发场景双保险）
             if m["post_id"] <= seen.get(username, 0):
