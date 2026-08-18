@@ -472,6 +472,16 @@ async def main():
             if not msgs:
                 print(f"[账号版] {name}: 最新 #{seen}，无新消息")
                 continue
+            # 首次运行（seen=0）：只初始化记录最新消息，不搬运历史
+            if seen == 0:
+                latest_id = max(m.id for m in msgs)
+                if "scrape_seen" not in state:
+                    state["scrape_seen"] = {}
+                state["scrape_seen"][name] = latest_id
+                with open(cfg.state_file, "w", encoding="utf-8") as f:
+                    json.dump(state, f, ensure_ascii=False)
+                print(f"[账号版] {name}: 首次初始化，记录最新 #{latest_id}，不搬运历史")
+                continue
             latest = max(m.id for m in msgs)
             print(f"[账号版] {name}: 发现新消息 {len(msgs)} 条 (#{seen+1}~#{latest})")
             for msg in sorted(msgs, key=lambda m: m.id):
