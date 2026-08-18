@@ -1,0 +1,18 @@
+name: diag-conn
+on:
+  workflow_dispatch:
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - run: pip install telethon
+      - name: Run diag
+        env:
+          BOT_SESSION: ${{ secrets.BOT_SESSION }}
+          API_ID: ${{ vars.API_ID }}
+          API_HASH: ${{ vars.API_HASH }}
+        run: python diag_conn.py
