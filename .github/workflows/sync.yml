@@ -34,7 +34,7 @@ jobs:
           SOURCE: ${{ vars.SOURCE }}
           DEST: ${{ vars.DEST }}
           WM_MODE: ${{ vars.WM_MODE }}
-          WM_AMOUNT: ${{ vars.WM_AMOUNT }}
+          WM_AMOUNT: ${{ vars.WM_AMOUNT || '0.10' }}
           WM_POS: ${{ vars.WM_POS }}
           AD_FILTER: ${{ vars.AD_FILTER }}
           AD_LLM: ${{ vars.AD_LLM }}
