@@ -237,34 +237,60 @@ def process_media_bytes(raw, is_video=False):
         return raw
 
 def _process_image(raw):
-    """图片：智能去水印（inpaint）或裁剪/遮盖"""
+    """图片：智能去水印（OpenCV inpaint）或裁剪/遮盖"""
     try:
-        from PIL import Image, ImageFilter
         import io
+        import numpy as np
+        from PIL import Image
         img = Image.open(io.BytesIO(raw))
         w, h = img.size
         mode = cfg.wm_mode
         if mode == "remove":
-            # 智能去除：检测底部/角落水印区域，用周围内容模糊修复
-            amount = cfg.wm_amount
-            if cfg.wm_pos == "auto":
-                pos = "bottom"
-            else:
-                pos = cfg.wm_pos
-            if pos in ("bottom", "bottom_center"):
-                box = (0, int(h * (1 - amount)), w, h)
-            elif pos == "bottom_right":
-                box = (int(w * 0.6), int(h * (1 - amount)), w, h)
-            elif pos == "bottom_left":
-                box = (0, int(h * (1 - amount)), int(w * 0.4), h)
-            elif pos == "top_right":
-                box = (int(w * 0.6), 0, w, int(h * amount))
-            elif pos == "top_left":
-                box = (0, 0, int(w * 0.4), int(h * amount))
-            else:
-                box = (0, int(h * (1 - amount)), w, h)
-            region = img.crop(box).filter(ImageFilter.GaussianBlur(radius=15))
-            img.paste(region, box)
+            # 真正的智能去水印：OpenCV inpaint（检测水印像素，用周围内容修复填充）
+            try:
+                import cv2
+                # 转 OpenCV 格式
+                img_rgb = img.convert("RGB")
+                cv_img = cv2.cvtColor(np.array(img_rgb), cv2.COLOR_RGB2BGR)
+                # 定位水印区域
+                amount = cfg.wm_amount
+                pos = cfg.wm_pos if cfg.wm_pos != "auto" else "bottom"
+                if pos in ("bottom", "bottom_center"):
+                    box = (0, int(h * (1 - amount)), w, h)
+                elif pos == "bottom_right":
+                    box = (int(w * 0.6), int(h * (1 - amount)), w, h)
+                elif pos == "bottom_left":
+                    box = (0, int(h * (1 - amount)), int(w * 0.4), h)
+                elif pos == "top_right":
+                    box = (int(w * 0.6), 0, w, int(h * amount))
+                elif pos == "top_left":
+                    box = (0, 0, int(w * 0.4), int(h * amount))
+                else:
+                    box = (0, int(h * (1 - amount)), w, h)
+                x1, y1, x2, y2 = box
+                # 在区域内检测水印像素：与周围背景差异大的像素（文字/logo）
+                region = cv_img[y1:y2, x1:x2]
+                gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+                # 边缘检测 + 二值化，找出文字/logo 像素
+                edges = cv2.Canny(gray, 50, 150)
+                # 膨胀让掩膜覆盖文字笔画
+                kernel = np.ones((3, 3), np.uint8)
+                mask = cv2.dilate(edges, kernel, iterations=2)
+                # 如果检测到的像素太少（纯色背景无文字），用区域边缘做掩膜
+                if mask.sum() < 500:
+                    mask = np.zeros_like(gray)
+                    mask[:, :] = 255  # 整个区域修复
+                # 只对区域做 inpaint（图像和 mask 必须同尺寸）
+                repaired_region = cv2.inpaint(region, mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+                # 把修复结果放回原图
+                cv_img[y1:y2, x1:x2] = repaired_region
+                # 转回 PIL
+                img = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
+            except Exception as e:
+                print(f"[水印] OpenCV inpaint 失败，降级模糊遮盖: {e}")
+                from PIL import ImageFilter
+                region = img.crop(box).filter(ImageFilter.GaussianBlur(radius=15))
+                img.paste(region, box)
         elif mode.startswith("crop"):
             amount = cfg.wm_amount
             if mode == "crop_bottom":
