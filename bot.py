@@ -420,8 +420,10 @@ async def main():
 
     # 遍历源频道，检查新消息
     total_forwarded = 0
+    # 兼容旧 state 结构（scrape_seen），避免重复搬运
+    seen_map = state.get("scrape_seen", state)
     for name, entity in sources:
-        seen = state.get(name, 0)
+        seen = seen_map.get(name, 0)
         try:
             # 获取频道最新消息（从 seen+1 开始）
             msgs = []
@@ -438,8 +440,10 @@ async def main():
                     ok = await forward_message(client, msg, dest)
                     if ok:
                         total_forwarded += 1
-                # 每条处理后立即更新 state
-                state[name] = msg.id
+                # 每条处理后立即更新 state（保持 scrape_seen 结构兼容）
+                if "scrape_seen" not in state:
+                    state["scrape_seen"] = {}
+                state["scrape_seen"][name] = msg.id
                 with open(cfg.state_file, "w", encoding="utf-8") as f:
                     json.dump(state, f, ensure_ascii=False)
         except Exception as e:
