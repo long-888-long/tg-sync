@@ -19,7 +19,7 @@ print("[账号版] 启动中...", flush=True)
 
 # Telethon
 from telethon import TelegramClient
-from telethon.tl.types import Message, MessageMediaPhoto, MessageMediaDocument
+from telethon.tl.types import Message, MessageMediaPhoto, MessageMediaDocument, DocumentAttributeFilename
 
 print("[账号版] Telethon 加载完成", flush=True)
 
@@ -325,36 +325,63 @@ async def forward_message(client, msg, dest_entity):
         cleaned = rewrite_text(cleaned)
     caption = cleaned[:1024] if cleaned else None
 
-    # 媒体处理（带超时）
-    media_bytes = None
+    # 媒体处理（带超时，用临时文件避免大文件内存问题）
+    media_path = None
     is_video = False
+    is_image = False
+    file_name = None
     if msg.media:
         try:
+            import tempfile
+            tmpdir = tempfile.mkdtemp(prefix="tgfb_")
             if isinstance(msg.media, MessageMediaPhoto):
-                media_bytes = await asyncio.wait_for(client.download_media(msg.media, file=bytes), timeout=120)
-                media_bytes = process_media_bytes(media_bytes, is_video=False)
+                is_image = True
+                file_name = f"photo_{msg.id}.jpg"
+                media_path = await asyncio.wait_for(
+                    client.download_media(msg.media, file=os.path.join(tmpdir, file_name)), timeout=120)
             elif isinstance(msg.media, MessageMediaDocument):
-                # 判断是否视频
-                attrs = msg.media.document.attributes
-                for a in attrs:
+                doc = msg.media.document
+                # 提取文件名
+                for a in doc.attributes:
+                    if isinstance(a, DocumentAttributeFilename):
+                        file_name = a.file_name
+                        break
+                if not file_name:
+                    file_name = f"file_{msg.id}"
+                # 判断类型
+                for a in doc.attributes:
                     if hasattr(a, "video") and a.video:
                         is_video = True
                         break
-                media_bytes = await asyncio.wait_for(client.download_media(msg.media, file=bytes), timeout=180)
-                if media_bytes:
-                    media_bytes = process_media_bytes(media_bytes, is_video=is_video)
+                    if hasattr(a, "w") and hasattr(a, "h"):
+                        is_image = True
+                media_path = await asyncio.wait_for(
+                    client.download_media(msg.media, file=os.path.join(tmpdir, file_name)), timeout=300)
         except asyncio.TimeoutError:
             print(f"[媒体] 下载超时 #{msg.id}")
-            media_bytes = None
+            media_path = None
         except Exception as e:
             print(f"[媒体] 下载失败 #{msg.id}: {e}")
-            media_bytes = None
+            media_path = None
+
+    # 水印处理（只处理图片/视频，APK等文件原样发送）
+    if media_path and os.path.exists(media_path) and (is_image or is_video):
+        try:
+            with open(media_path, "rb") as f:
+                raw = f.read()
+            processed = process_media_bytes(raw, is_video=is_video)
+            if processed != raw:
+                with open(media_path, "wb") as f:
+                    f.write(processed)
+        except Exception as e:
+            print(f"[水印] 处理失败 #{msg.id}: {e}")
 
     # 发送
     try:
-        if media_bytes:
-            result = await client.send_file(dest_entity, media_bytes, caption=caption)
-            print(f"[发送] 媒体 #{msg.id} → {cfg.dest} (caption={'有' if caption else '无'})")
+        if media_path and os.path.exists(media_path):
+            result = await client.send_file(dest_entity, media_path, caption=caption,
+                                            force_document=not (is_image or is_video))
+            print(f"[发送] 媒体 #{msg.id} → {cfg.dest} (caption={'有' if caption else '无'}, file={file_name})")
         else:
             if caption:
                 result = await client.send_message(dest_entity, caption)
