@@ -65,7 +65,14 @@ def load_keywords():
         "hidden_link_patterns": ["点我加群", "扫码进群", "拉你进群", "进群领", "私聊我", "私信我",
                                  "私我", "联系我", "加我微信", "加V", "V我", "扣我", "主页有",
                                  "简介有", "评论区见", "置顶有", "通过我的链接注册", "输入邀请码",
-                                 "注册即送", "邀请码"],
+                                 "注册即送", "邀请码", "点击获取", "点击链接", "点击查看", "点击加入",
+                                 "点击下载", "点击关注", "点击进入", "点击了解", "点击领取", "点击注册",
+                                 "点击添加", "点击进群", "点击安装", "点击体验", "点击使用", "点击访问",
+                                 "获取链接", "获取方式", "获取地址", "获取资源", "获取教程", "获取安装包",
+                                 "领取链接", "领取方式", "领取地址", "领取资源", "私信获取", "私聊获取",
+                                 "联系获取", "加我获取", "关注获取", "回复获取", "后台获取", "主页获取",
+                                 "简介获取", "置顶获取", "评论区获取", "点击上方", "点击下方", "点击头像",
+                                 "点击名片", "点击关注", "点击订阅", "点击转发", "点击收藏"],
         "aff_params": ["start", "aff", "ref", "code", "invite", "from", "source", "utm_source",
                        "utm_medium", "utm_campaign", "channel", "promo", "bonus", "reward"],
         "whitelist": ["群公告", "群规", "入群链接", "技术分享", "新闻", "教程", "公告"]
@@ -337,9 +344,34 @@ def _process_video(raw, mode):
         return raw
 
 # ---------------- 搬运主流程 ----------------
+def extract_hidden_links(msg):
+    """提取消息实体里的隐藏链接（MessageEntityTextUrl / MessageEntityUrl），还原显示"""
+    links = []
+    try:
+        entities = getattr(msg, "entities", None) or []
+        for ent in entities:
+            url = getattr(ent, "url", None)
+            if url:
+                links.append(url)
+    except Exception:
+        pass
+    # 去重保序
+    seen = set()
+    out = []
+    for u in links:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
 async def forward_message(client, msg, dest_entity):
     """搬运单条消息：过滤 → 清洗 → 改写 → 去水印 → 发送"""
     text = msg.message or ""
+    # 提取隐藏链接（实体里的 URL，如"👉🏻点击获取"实际链接在 entities 里）
+    hidden_links = extract_hidden_links(msg)
+    if hidden_links:
+        # 把隐藏链接还原显示到文本末尾
+        text = text + "\n\n" + "\n".join(hidden_links)
     # 广告过滤
     if cfg.ad_filter and contains_ad(text):
         print(f"[过滤] 广告命中，跳过 #{msg.id}")
