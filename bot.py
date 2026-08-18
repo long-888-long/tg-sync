@@ -320,13 +320,13 @@ async def forward_message(client, msg, dest_entity):
         cleaned = rewrite_text(cleaned)
     caption = cleaned[:1024] if cleaned else None
 
-    # 媒体处理
+    # 媒体处理（带超时）
     media_bytes = None
     is_video = False
     if msg.media:
         try:
             if isinstance(msg.media, MessageMediaPhoto):
-                media_bytes = await client.download_media(msg.media, file=bytes)
+                media_bytes = await asyncio.wait_for(client.download_media(msg.media, file=bytes), timeout=120)
                 media_bytes = process_media_bytes(media_bytes, is_video=False)
             elif isinstance(msg.media, MessageMediaDocument):
                 # 判断是否视频
@@ -335,9 +335,12 @@ async def forward_message(client, msg, dest_entity):
                     if hasattr(a, "video") and a.video:
                         is_video = True
                         break
-                media_bytes = await client.download_media(msg.media, file=bytes)
+                media_bytes = await asyncio.wait_for(client.download_media(msg.media, file=bytes), timeout=180)
                 if media_bytes:
                     media_bytes = process_media_bytes(media_bytes, is_video=is_video)
+        except asyncio.TimeoutError:
+            print(f"[媒体] 下载超时 #{msg.id}")
+            media_bytes = None
         except Exception as e:
             print(f"[媒体] 下载失败 #{msg.id}: {e}")
             media_bytes = None
@@ -415,21 +418,25 @@ async def main():
         sys.exit(1)
     print(f"[账号版] 登录成功: {me.first_name} (ID: {me.id})")
 
-    # 解析源频道和目标频道
+    # 解析源频道和目标频道（带超时）
     sources = []
     for s in cfg.source:
         try:
-            entity = await client.get_entity(s)
+            entity = await asyncio.wait_for(client.get_entity(s), timeout=30)
             sources.append((s, entity))
             print(f"[账号版] 源频道 {s}: ✅ 已加入")
+        except asyncio.TimeoutError:
+            print(f"[账号版] 源频道 {s}: ❌ 解析超时")
         except Exception as e:
             print(f"[账号版] 源频道 {s}: ❌ 无法访问 ({e})")
     dest_entities = []
     for d in cfg.dest:
         try:
-            entity = await client.get_entity(d)
+            entity = await asyncio.wait_for(client.get_entity(d), timeout=30)
             dest_entities.append(entity)
             print(f"[账号版] 目标频道 {d}: ✅ 可访问")
+        except asyncio.TimeoutError:
+            print(f"[账号版] 目标频道 {d}: ❌ 解析超时")
         except Exception as e:
             print(f"[账号版] 目标频道 {d}: ❌ 无法访问 ({e})")
 
@@ -448,13 +455,20 @@ async def main():
             break
         seen = seen_map.get(name, 0)
         try:
-            # 获取频道最新消息（从 seen+1 开始，限制最多 3 条防止运行过长）
+            # 获取频道最新消息（带超时，限制最多 3 条防止运行过长）
             msgs = []
-            async for msg in client.iter_messages(entity, limit=20, reverse=True):
-                if msg.id > seen:
-                    msgs.append(msg)
-                    if len(msgs) >= 3:
-                        break
+            async def _collect():
+                nonlocal msgs
+                async for msg in client.iter_messages(entity, limit=20, reverse=True):
+                    if msg.id > seen:
+                        msgs.append(msg)
+                        if len(msgs) >= 3:
+                            break
+            try:
+                await asyncio.wait_for(_collect(), timeout=60)
+            except asyncio.TimeoutError:
+                print(f"[账号版] {name}: 拉取消息超时")
+                continue
             if not msgs:
                 print(f"[账号版] {name}: 最新 #{seen}，无新消息")
                 continue
