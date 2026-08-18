@@ -448,21 +448,21 @@ async def main():
     total_forwarded = 0
     # 兼容旧 state 结构（scrape_seen），避免重复搬运
     seen_map = state.get("scrape_seen", state)
-    MAX_TOTAL = 10  # 单次运行最多处理 10 条，防止运行过长
+    MAX_TOTAL = 3  # 单次运行最多处理 3 条，防止运行过长
     for name, entity in sources:
         if total_forwarded >= MAX_TOTAL:
             print(f"[账号版] 已达单次处理上限 {MAX_TOTAL} 条，剩余频道下次运行处理")
             break
         seen = seen_map.get(name, 0)
         try:
-            # 获取频道最新消息（带超时，限制最多 3 条防止运行过长）
+            # 获取频道最新消息（带超时，每个源最多 1 条防止运行过长）
             msgs = []
             async def _collect():
                 nonlocal msgs
                 async for msg in client.iter_messages(entity, limit=20, reverse=True):
                     if msg.id > seen:
                         msgs.append(msg)
-                        if len(msgs) >= 3:
+                        if len(msgs) >= 1:
                             break
             try:
                 await asyncio.wait_for(_collect(), timeout=60)
