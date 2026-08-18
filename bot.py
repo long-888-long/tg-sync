@@ -391,15 +391,28 @@ async def main():
         except Exception:
             state = {}
 
-    client = TelegramClient(session_path, API_ID, API_HASH)
+    client = TelegramClient(session_path, API_ID, API_HASH, connection_retries=2, timeout=20)
     print("[账号版] 正在连接 Telegram...", flush=True)
-    await client.connect()
+    try:
+        await asyncio.wait_for(client.connect(), timeout=60)
+    except asyncio.TimeoutError:
+        print("FATAL: 连接 Telegram 超时（网络问题）", flush=True)
+        sys.exit(1)
     print("[账号版] 连接成功，检查 session...", flush=True)
-    if not await client.is_user_authorized():
+    try:
+        authorized = await asyncio.wait_for(client.is_user_authorized(), timeout=30)
+    except asyncio.TimeoutError:
+        print("FATAL: session 验证超时（session 可能已失效，需要重新登录生成新 session）", flush=True)
+        sys.exit(1)
+    if not authorized:
         print("FATAL: session 未授权（可能已失效，需要重新登录生成新 session）", flush=True)
         sys.exit(1)
 
-    me = await client.get_me()
+    try:
+        me = await asyncio.wait_for(client.get_me(), timeout=30)
+    except asyncio.TimeoutError:
+        print("FATAL: get_me 超时（session 可能已失效）", flush=True)
+        sys.exit(1)
     print(f"[账号版] 登录成功: {me.first_name} (ID: {me.id})")
 
     # 解析源频道和目标频道
