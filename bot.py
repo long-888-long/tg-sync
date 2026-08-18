@@ -160,13 +160,13 @@ def llm_call(prompt, max_tokens=8000):
         "max_tokens": max_tokens,
         "temperature": 0.7
     }).encode("utf-8")
-    for attempt in range(1, 4):
+    for attempt in range(1, 3):
         try:
             req = urllib.request.Request(url, data=body, headers={
                 "Content-Type": "application/json",
                 "Authorization": "Bearer " + cfg.llm_key
             })
-            with urllib.request.urlopen(req, timeout=90) as resp:
+            with urllib.request.urlopen(req, timeout=45) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             content = ""
             if data.get("choices"):
@@ -425,11 +425,13 @@ async def main():
     for name, entity in sources:
         seen = seen_map.get(name, 0)
         try:
-            # 获取频道最新消息（从 seen+1 开始）
+            # 获取频道最新消息（从 seen+1 开始，限制最多 5 条防止运行过长）
             msgs = []
             async for msg in client.iter_messages(entity, limit=20, reverse=True):
                 if msg.id > seen:
                     msgs.append(msg)
+                    if len(msgs) >= 5:
+                        break
             if not msgs:
                 print(f"[账号版] {name}: 最新 #{seen}，无新消息")
                 continue
