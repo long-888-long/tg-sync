@@ -58,7 +58,7 @@ def load_keywords():
         "ad_keywords": ["广告", "推广", "特价", "优惠", "加微信", "扫码", "返利", "代购",
                         "贷款", "博彩", "兼职", "刷单", "加群", "进群", "私聊", "私信",
                         "完全免费", "免费接口", "上当受骗", "官方认证", "强烈推荐", "快来",
-                        "速来", "别错过", "白嫖", "限免", "免费领取", "免费体验", "永久免费",
+                        "速来", "别错过", "白嫖", "限免", "免费领取", "免费体验", "永���免费",
                         "免费开放", "推荐大家", "欢迎使用", "欢迎体验", "正规平台", "官方唯一",
                         "错过可惜", "投稿通道", "频道链接", "群号", "群二维码", "群链接",
                         "出售域名", "域名注册", "域名交易",
@@ -71,7 +71,7 @@ def load_keywords():
                         "代充", "代练", "外挂", "脚本辅助", "破解版", "私服", "点卡充值",
                         "充值卡", "游戏币", "元宝", "钻石充值", "皮肤代充", "加速器", "翻墙",
                         "梯子", "机场订阅", "节点订阅", "科学上网", "SSR订阅", "V2Ray", "Clash订阅",
-                        "外汇", "荐股", "炒股群", "内幕消息", "稳赚", "翻倍收益", "理财", "投资群",
+                        "外汇", "荐股", "炒股群", "内幕消息", "��赚", "翻倍收益", "理财", "投资群",
                         "数字货币", "挖矿", "矿机", "量化交易", "带单", "喊单", "资金盘", "传销",
                         "分销", "招代理", "加盟", "微商", "薅羊毛", "红包群", "助力", "砍价群",
                         "色情", "成人", "约炮", "裸聊", "福利姬", "私密照", "黄色资源",
@@ -174,7 +174,7 @@ def strip_trace(text):
         if re.search(r'(在|来|进|加|欢迎|这是|去)[\w\u4e00-\u9fa5]{0,8}(频道|群|水群|交流群|茶馆|投稿|入口)', s):
             continue
         # 单独出现的引流词（无动词前缀）
-        if re.match(r'^(投稿通道|频道链接|频道入口|群号|群链接|群二维码|交流群|水群|茶馆|入群|进群|加群)$', s):
+        if re.match(r'^(投稿通道|频道链接|频道入口|群号|群链接|群二维码|交流群|水群|茶馆|入群|进��|加群)$', s):
             continue
         if re.match(r'^[🌸🌹🌺✨🌟⭐💫·●○•]+$', s):
             continue
@@ -279,36 +279,46 @@ def _process_image(raw):
                 cv_img = cv2.cvtColor(np.array(img_rgb), cv2.COLOR_RGB2BGR)
                 # 定位水印区域
                 amount = cfg.wm_amount
-                pos = cfg.wm_pos if cfg.wm_pos != "auto" else "bottom"
-                if pos in ("bottom", "bottom_center"):
-                    box = (0, int(h * (1 - amount)), w, h)
+                pos = cfg.wm_pos if cfg.wm_pos != "auto" else None
+                # 构建候选区域列表
+                candidates = []
+                if pos is None:
+                    # auto 模式：扫描上下左右四条边
+                    candidates = [
+                        (0, 0, w, int(h * amount)),           # top: 整个顶部
+                        (0, int(h * (1 - amount)), w, h),     # bottom: 整个底部
+                        (0, 0, int(w * 0.5), int(h * amount)),# top_left
+                        (int(w * 0.5), 0, w, int(h * amount)),# top_right
+                        (0, int(h * (1 - amount)), int(w * 0.5), h),  # bottom_left
+                        (int(w * 0.5), int(h * (1 - amount)), w, h),  # bottom_right
+                    ]
+                elif pos in ("bottom", "bottom_center"):
+                    candidates = [(0, int(h * (1 - amount)), w, h)]
                 elif pos == "bottom_right":
-                    box = (int(w * 0.6), int(h * (1 - amount)), w, h)
+                    candidates = [(int(w * 0.6), int(h * (1 - amount)), w, h)]
                 elif pos == "bottom_left":
-                    box = (0, int(h * (1 - amount)), int(w * 0.4), h)
+                    candidates = [(0, int(h * (1 - amount)), int(w * 0.4), h)]
+                elif pos == "top":
+                    candidates = [(0, 0, w, int(h * amount))]
                 elif pos == "top_right":
-                    box = (int(w * 0.6), 0, w, int(h * amount))
+                    candidates = [(int(w * 0.6), 0, w, int(h * amount))]
                 elif pos == "top_left":
-                    box = (0, 0, int(w * 0.4), int(h * amount))
+                    candidates = [(0, 0, int(w * 0.4), int(h * amount))]
                 else:
-                    box = (0, int(h * (1 - amount)), w, h)
-                x1, y1, x2, y2 = box
-                # 在区域内检测水印像素：与周围背景差异大的像素（文字/logo）
-                region = cv_img[y1:y2, x1:x2]
-                gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
-                # 边缘检测 + 二值化，找出文字/logo 像素
-                edges = cv2.Canny(gray, 50, 150)
-                # 膨胀让掩膜覆盖文字笔画
+                    candidates = [(0, int(h * (1 - amount)), w, h)]
+                # 对每个候选区域检测水印，有就修复
                 kernel = np.ones((3, 3), np.uint8)
-                mask = cv2.dilate(edges, kernel, iterations=2)
-                # 如果检测到的像素太少（纯色背景无文字），用区域边缘做掩膜
-                if mask.sum() < 500:
-                    mask = np.zeros_like(gray)
-                    mask[:, :] = 255  # 整个区域修复
-                # 只对区域做 inpaint（图像和 mask 必须同尺寸）
-                repaired_region = cv2.inpaint(region, mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
-                # 把修复结果放回原图
-                cv_img[y1:y2, x1:x2] = repaired_region
+                for (x1, y1, x2, y2) in candidates:
+                    if y2 <= y1 or x2 <= x1:
+                        continue
+                    region = cv_img[y1:y2, x1:x2]
+                    gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+                    edges = cv2.Canny(gray, 50, 150)
+                    mask = cv2.dilate(edges, kernel, iterations=2)
+                    if mask.sum() < 500:
+                        continue  # 该区域无水印，跳过
+                    repaired_region = cv2.inpaint(region, mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+                    cv_img[y1:y2, x1:x2] = repaired_region
                 # 转回 PIL
                 img = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
             except Exception as e:
@@ -363,7 +373,7 @@ def _process_video(raw, mode):
 
 # ---------------- 搬运主流程 ----------------
 def extract_hidden_links(msg):
-    """提取消息实体里的隐藏链接（MessageEntityTextUrl / MessageEntityUrl），还原显示"""
+    """提取消息实体里的隐藏链���（MessageEntityTextUrl / MessageEntityUrl），还原显示"""
     links = []
     try:
         entities = getattr(msg, "entities", None) or []
@@ -509,7 +519,7 @@ async def main():
     except asyncio.TimeoutError:
         print("FATAL: 连接 Telegram 超时（网络问题）", flush=True)
         sys.exit(1)
-    print("[账号版] 连接成功，检查 session...", flush=True)
+    print("[账号版] 连接成功，��查 session...", flush=True)
     try:
         authorized = await asyncio.wait_for(client.is_user_authorized(), timeout=30)
     except asyncio.TimeoutError:
