@@ -76,7 +76,8 @@ def load_keywords():
                 data = json.load(f)
             for k in kw:
                 if isinstance(data.get(k), list):
-                    kw[k] = data[k]
+                    # 合并去重（内置基础词 + 远程词库，一个都不丢）
+                    kw[k] = list(dict.fromkeys(kw[k] + data[k]))
     except Exception:
         pass
     return kw
