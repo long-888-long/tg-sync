@@ -15,9 +15,13 @@ import urllib.request
 import urllib.parse
 import urllib.error
 
+print("[账号版] 启动中...", flush=True)
+
 # Telethon
 from telethon import TelegramClient
 from telethon.tl.types import Message, MessageMediaPhoto, MessageMediaDocument
+
+print("[账号版] Telethon 加载完成", flush=True)
 
 # 公共 API ID/Hash（Telegram 官方示例凭证）
 API_ID = int(os.environ.get("API_ID", "2040"))
@@ -388,9 +392,11 @@ async def main():
             state = {}
 
     client = TelegramClient(session_path, API_ID, API_HASH)
+    print("[账号版] 正在连接 Telegram...", flush=True)
     await client.connect()
+    print("[账号版] 连接成功，检查 session...", flush=True)
     if not await client.is_user_authorized():
-        print("FATAL: session 未授权")
+        print("FATAL: session 未授权（可能已失效，需要重新登录生成新 session）", flush=True)
         sys.exit(1)
 
     me = await client.get_me()
