@@ -550,7 +550,13 @@ async def main():
     dest_entities = []
     for d in cfg.dest:
         try:
-            entity = await asyncio.wait_for(client.get_entity(d), timeout=30)
+            eid = d
+            try:
+                if str(d).lstrip("-").isdigit():
+                    eid = int(d)
+            except Exception:
+                pass
+            entity = await asyncio.wait_for(client.get_entity(eid), timeout=30)
             dest_entities.append(entity)
             print(f"[账号版] 目标频道 {d}: ✅ 可访问")
         except asyncio.TimeoutError:
@@ -577,7 +583,7 @@ async def main():
             msgs = []
             async def _collect():
                 nonlocal msgs
-                async for msg in client.iter_messages(entity, limit=20, reverse=True):
+                async for msg in client.iter_messages(entity, limit=20):
                     if msg.id > seen:
                         msgs.append(msg)
                         if len(msgs) >= 1:
