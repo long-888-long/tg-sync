@@ -569,17 +569,6 @@ async def main():
         sys.exit(1)
 
 
-    # === 临时测试：向目标频道发一条测试消息（验证 bot 正常）===
-    if os.environ.get("SEND_TEST", "").strip().lower() == "true":
-        try:
-            test_text = os.environ.get("TEST_TEXT", "✅ 测试消息：bot 正常运行中")
-            for dest in dest_entities:
-                await client.send_message(dest, test_text)
-                print(f"[测试] 已向目标频道发送测试消息: {test_text}")
-        except Exception as e:
-            print(f"[测试] 发送测试消息失败: {e}")
-    # === 临时测试结束 ===
-
     # 遍历源频道，检查新消息
     total_forwarded = 0
     # 兼容旧 state 结构（scrape_seen），避免重复搬运
