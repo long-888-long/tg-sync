@@ -577,7 +577,12 @@ async def main():
         if total_forwarded >= MAX_TOTAL:
             print(f"[账号版] 已达单次处理上限 {MAX_TOTAL} 条，剩余频道下次运行处理")
             break
+        # 归一化 seen：兼容带 @ 和不带 @ 的 key，取较小值，避免"记录值超前"导致新消息被跳过
+        name_plain = name.lstrip("@")
         seen = seen_map.get(name, 0)
+        seen_plain = seen_map.get(name_plain, 0)
+        if seen_plain and (seen == 0 or seen_plain < seen):
+            seen = seen_plain
         try:
             # 获取频道最新消息（带超时，每个源最多 1 条防止运行过长）
             msgs = []
