@@ -244,7 +244,9 @@ def rewrite_text(text):
     )
     out = llm_call(prompt)
     if valid_rewrite(out):
+        print(f"[改写] 原文({len(text)}字) → 改写({len(out.strip())}字)")
         return out.strip()
+    print("[改写] LLM 改写失败或无效，使用原文")
     return text
 
 # ---------------- 图片/视频水印处理 ----------------
@@ -254,9 +256,15 @@ def process_media_bytes(raw, is_video=False):
         if is_video:
             # 视频：remove 降级为裁剪
             mode = cfg.wm_mode if cfg.wm_mode != "remove" else "crop_bottom"
-            return _process_video(raw, mode)
+            result = _process_video(raw, mode)
+            if result != raw:
+                print(f"[水印] 视频处理完成 ({len(raw)}→{len(result)} 字节)")
+            return result
         else:
-            return _process_image(raw)
+            result = _process_image(raw)
+            if result != raw:
+                print(f"[水印] 图片处理完成 ({len(raw)}→{len(result)} 字节)")
+            return result
     except Exception as e:
         print(f"[水印] 处理失败，用原图: {e}")
         return raw
@@ -324,6 +332,9 @@ def _process_image(raw):
             except Exception as e:
                 print(f"[水印] OpenCV inpaint 失败，降级模糊遮盖: {e}")
                 from PIL import ImageFilter
+                # 降级：对底部区域做模糊遮盖（不依赖未定义的 box）
+                amount = cfg.wm_amount
+                box = (0, int(h * (1 - amount)), w, h)
                 region = img.crop(box).filter(ImageFilter.GaussianBlur(radius=15))
                 img.paste(region, box)
         elif mode.startswith("crop"):
