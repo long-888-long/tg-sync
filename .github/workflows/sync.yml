@@ -41,6 +41,7 @@ jobs:
           REWRITE: ${{ vars.REWRITE }}
           LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
           LLM_MODEL: ${{ vars.LLM_MODEL }}
+          SELF_CHECK: 'true'
         run: python bot.py
 
       - name: Commit state
