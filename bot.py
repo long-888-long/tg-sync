@@ -593,59 +593,6 @@ async def main():
         print("FATAL: 源/目标频道不可用")
         sys.exit(1)
 
-    # ===== 自检模式（SELF_CHECK=true 时执行，验证各功能）=====
-    if os.environ.get("SELF_CHECK", "").strip().lower() == "true":
-        print("\n========== 功能自检开始 ==========", flush=True)
-        # 1. 广告过滤测试
-        print("\n[自检] 1. 广告过滤 (contains_ad)", flush=True)
-        ad_samples = [
-            ("广告：加微信 xxx 领取红包", True),
-            ("限时秒杀，扫码进群领取福利", True),
-            ("今天天气不错，分享一个技术教程", False),
-            ("欢迎加入我们的讨论群交流", False),
-            ("USDT 兑换 TRX，秒到账", True),
-        ]
-        for txt, expect in ad_samples:
-            got = contains_ad(txt, use_llm=False)
-            mark = "✅" if got == expect else "❌"
-            print(f"  {mark} 期望={expect} 实际={got} | {txt[:30]}", flush=True)
-        # 2. 防溯源清洗测试
-        print("\n[自检] 2. 防溯源清洗 (strip_trace)", flush=True)
-        trace_txt = "关注 @stymei1 频道，主页有惊喜，领取方式见评论区 https://example.com?ref=abc123 完整教程见官网"
-        cleaned = strip_trace(trace_txt)
-        print(f"  原文: {trace_txt}", flush=True)
-        print(f"  清洗: {cleaned}", flush=True)
-        # 3. LLM 改写测试
-        print("\n[自检] 3. LLM 改写 (rewrite_text)", flush=True)
-        if cfg.rewrite and cfg.llm_key:
-            orig = "快来！这个资源限时免费领取，别错过！完整教程在主页自取"
-            rw = rewrite_text(orig)
-            print(f"  原文: {orig}", flush=True)
-            print(f"  改写: {rw}", flush=True)
-            print(f"  是否变化: {'✅ 是' if rw != orig else '❌ 否（可能LLM失败）'}", flush=True)
-        else:
-            print("  ⏭ 跳过（REWRITE 未启用或无 LLM_KEY）", flush=True)
-        # 4. 图片去水印测试
-        print("\n[自检] 4. 图片去水印 (process_media_bytes)", flush=True)
-        try:
-            import io
-            from PIL import Image, ImageDraw
-            img = Image.new("RGB", (400, 300), (255, 255, 255))
-            draw = ImageDraw.Draw(img)
-            draw.text((10, 280), "WATERMARK TEST", fill=(0, 0, 0))
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=95)
-            raw = buf.getvalue()
-            processed = process_media_bytes(raw, is_video=False)
-            print(f"  原图: {len(raw)} 字节, 处理后: {len(processed)} 字节", flush=True)
-            if processed != raw:
-                print("  ✅ 图片已处理（去水印生效）", flush=True)
-            else:
-                print("  ⚠️ 图片未变化（可能无水印或处理失败）", flush=True)
-        except Exception as e:
-            print(f"  ❌ 图片测试异常: {e}", flush=True)
-        print("\n========== 功能自检结束 ==========", flush=True)
-    # ===== 自检结束 =====
 
 
     # 遍历源频道，检查新消息
