@@ -480,6 +480,20 @@ async def forward_message(client, msg, dest_entity):
         print(f"[发送] 失败 #{msg.id}: {e}")
         return False
 
+
+async def _forward_one(client, msg, dest_entities):
+    """对每个目标频道搬运一条消息，返回是否至少成功一次（单条失败不影响其他目标）"""
+    ok_any = False
+    for dest in dest_entities:
+        try:
+            ok = await forward_message(client, msg, dest)
+            if ok:
+                ok_any = True
+        except Exception as e:
+            print(f"[账号版] 搬运 #{msg.id} → {dest} 失败: {e}")
+    return ok_any
+
+
 # ---------------- 主流程 ----------------
 async def main():
     global cfg, KEYWORDS
@@ -573,7 +587,7 @@ async def main():
     total_forwarded = 0
     # 兼容旧 state 结构（scrape_seen），避免重复搬运
     seen_map = state.get("scrape_seen", state)
-    MAX_TOTAL = 3  # 单次运行最多处理 3 条，防止运行过长
+    MAX_TOTAL = 10  # 单次运行最多处理 10 条，防止运行过长
     for name, entity in sources:
         if total_forwarded >= MAX_TOTAL:
             print(f"[账号版] 已达单次处理上限 {MAX_TOTAL} 条，剩余频道下次运行处理")
@@ -585,14 +599,14 @@ async def main():
         if seen_plain and (seen == 0 or seen_plain < seen):
             seen = seen_plain
         try:
-            # 获取频道最新消息（带超时，每个源最多 1 条防止运行过长）
+            # 获取频道新消息（带超时，收集所有 id>seen 的消息，不漏搬中间消息）
             msgs = []
             async def _collect():
                 nonlocal msgs
                 async for msg in client.iter_messages(entity, limit=20):
                     if msg.id > seen:
                         msgs.append(msg)
-                        if len(msgs) >= 1:
+                        if len(msgs) >= 20:
                             break
             try:
                 await asyncio.wait_for(_collect(), timeout=60)
@@ -615,11 +629,18 @@ async def main():
             latest = max(m.id for m in msgs)
             print(f"[账号版] {name}: 发现新消息 {len(msgs)} 条 (#{seen+1}~#{latest})")
             for msg in sorted(msgs, key=lambda m: m.id):
-                for dest in dest_entities:
-                    ok = await forward_message(client, msg, dest)
-                    if ok:
-                        total_forwarded += 1
-                # 每条处理后立即更新 state（保持 scrape_seen 结构兼容）
+                if total_forwarded >= MAX_TOTAL:
+                    print(f"[账号版] 已达单次处理上限 {MAX_TOTAL} 条，剩余下次运行处理")
+                    break
+                # 单条处理超时兜底：超时也标记为已处理，避免下次重复卡住
+                try:
+                    ok = await asyncio.wait_for(_forward_one(client, msg, dest_entities), timeout=180)
+                except asyncio.TimeoutError:
+                    print(f"[账号版] {name}: 处理 #{msg.id} 超时，跳过并标记已处理")
+                    ok = False
+                if ok:
+                    total_forwarded += 1
+                # 无论成功/失败/超时，都更新 state 到该消息，避免重复处理
                 if "scrape_seen" not in state:
                     state["scrape_seen"] = {}
                 state["scrape_seen"][name] = msg.id
