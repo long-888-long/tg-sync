@@ -128,22 +128,24 @@ def contains_ad(text, use_llm=True):
     """广告检测：关键词 + 话术 + aff链接 + 可选LLM"""
     if not text:
         return False
+    # 移除频道固定签名（如 "在花频道 · 茶馆水群 · 投稿通道"），避免误杀正常内容
+    clean = re.sub(r'(?:在\w+频道|茶馆水群|投稿通道|水群|频道链接|群链接|备用频道|侵权/申诉/帮助|广告合作).*?$', '', text, flags=re.S)
+    # aff 链接检测（最可靠的广告特征，不受签名影响）
+    for m in re.finditer(r'https?://[^\s"\']+', text):
+        if is_aff_link(m.group(0)):
+            return True
     # 关键词检测
     for kw in KEYWORDS["ad_keywords"]:
-        if kw and kw in text:
+        if kw and kw in clean:
             return True
     # 隐藏链接话术
     for pat in KEYWORDS["hidden_link_patterns"]:
-        if pat and pat in text:
-            return True
-    # aff 链接检测
-    for m in re.finditer(r'https?://[^\s"\']+', text):
-        if is_aff_link(m.group(0)):
+        if pat and pat in clean:
             return True
     # LLM 智能判断
     if use_llm and cfg.ad_llm:
         try:
-            out = llm_call("判断以下消息是否为广告引流，只回复\"广告\"或\"非广告\"：\n" + text[:500])
+            out = llm_call("判断以下消息是否为广告引流，只回复\"广告\"或\"非广告\"：\n" + clean[:500])
             if out and "广告" in out and "非广告" not in out:
                 return True
         except Exception:
