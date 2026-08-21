@@ -596,34 +596,6 @@ async def main():
         sys.exit(1)
 
 
-
-    # === 功能自检（SELF_CHECK=true 时执行）===
-    if os.environ.get("SELF_CHECK", "").strip().lower() == "true":
-        print("[自检] ===== 功能自检开始 =====")
-        # 1. 洗文案测试
-        test_text = "关注 @stymei1 频道，主页有惊喜，领取方式见评论区 https://example.com?ref=abc123 完整教程见官网\n\n🌸 在花频道 · 茶馆水群 · 投稿通道"
-        cleaned = strip_trace(test_text)
-        print(f"[自检] 洗文案原文: {test_text}")
-        print(f"[自检] 洗文案结果: {cleaned}")
-        # 2. 广告过滤测试（含 @zaihuapd 固定签名场景）
-        for t in ["加微信 xxx 领取红包", "今天天气不错，分享一个技术教程", "Codex 出现大规模异常提醒\n\n🌸 在花频道 · 茶馆水群 · 投稿通道"]:
-            print(f"[自检] 广告检测 '{t[:22]}...': {contains_ad(t)}")
-        # 3. 图片去水印测试
-        try:
-            from PIL import Image, ImageDraw
-            import io
-            img = Image.new("RGB", (400, 300), (255, 255, 255))
-            draw = ImageDraw.Draw(img)
-            draw.text((150, 260), "WATERMARK", fill=(0, 0, 0))
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG")
-            raw = buf.getvalue()
-            processed = process_media_bytes(raw, is_video=False)
-            print(f"[自检] 图片去水印: {len(raw)} → {len(processed)} 字节, 处理={'成功' if processed != raw else '无变化'}")
-        except Exception as e:
-            print(f"[自检] 图片去水印测试异常: {e}")
-        print("[自检] ===== 功能自检结束 =====")
-
     # 遍历源频道，检查新消息
     total_forwarded = 0
     # 兼容旧 state 结构（scrape_seen），避免重复搬运
