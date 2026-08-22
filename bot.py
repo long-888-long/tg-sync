@@ -109,16 +109,65 @@ def load_keywords():
 
 # ---------------- 广告检测 ----------------
 def is_aff_link(url):
-    """检测 aff/引流链接（带跟踪参数）"""
+    """检测 aff/引流链接（带跟踪参数 / 短链 / 跳转域名）"""
     try:
         if "t.me/+" in url:
             return True  # 私有邀请链接
         parsed = urllib.parse.urlparse(url)
-        if not parsed.query:
-            return False
+        host = (parsed.hostname or "").lower()
+        # 短链/跳转/电商推广域名检测
+        SHORT_LINK_DOMAINS = {
+            "t.cn", "dwz.cn", "sourl.cn", "url.cn", "u.wechat.com", "j.mp",
+            "bit.ly", "goo.gl", "tinyurl.com", "is.gd", "cutt.ly", "shorturl.at",
+            "rb.gy", "t.ly", "s.id", "kutt.it", "v.gd", "t.co", "suo.im",
+            "6du.in", "w.url.cn", "u.nu", "0x9.me", "a.nxw.so", "dwz.win",
+            "qqx.cn", "dhurl.cn", "mrw.so", "v.douyin.com", "t.weibo.com",
+            "mp.weixin.qq.com", "docs.qq.com", "kdocs.cn", "wj.qq.com",
+            "jinshuju.net", "wjx.cn", "wjx.top", "form.mikecrm.com", "f.wps.cn",
+            "mmbiz.qpic.cn", "mmbizurl.cn", "wx.qlogo.cn", "wx.qpic.cn",
+            "xhslink.com", "t.xiaohongshu.com", "v.kuaishou.com", "iesdouyin.com",
+            "b23.tv", "t.bilibili.com", "m.tb.cn", "tb.cn", "uland.taobao.com",
+            "s.click.taobao.com", "u.jd.com", "3.cn", "union-click.jd.com",
+            "cps.jd.com", "p.pinduoduo.com", "mobile.yangkeduo.com",
+            "waimai.meituan.com", "ele.me", "h5.m.taobao.com", "main.m.taobao.com",
+            "shop.m.taobao.com", "detail.m.tmall.com", "pages.tmall.com",
+            "market.m.taobao.com", "s.m.taobao.com", "item.m.jd.com", "item.jd.com",
+            "mall.jd.com", "channel.jd.com", "pro.jd.com", "y.jd.com",
+            "coupon.jd.com", "promo.jd.com", "t.jd.com", "s.jd.com",
+            "union.jd.com", "media.jd.com", "cps3.jd.com", "sale.jd.com"
+        }
+        if host in SHORT_LINK_DOMAINS:
+            return True
+        # 补充引流参数（keywords.json 之外的常见参数）
+        EXTRA_AFF_PARAMS = {
+            "channel", "invite", "invite_code", "invitation", "from", "from_src",
+            "from_source", "from_uid", "from_user", "from_channel", "share",
+            "share_id", "share_uid", "share_token", "share_code", "source",
+            "source_id", "source_code", "source_type", "agent", "agent_code",
+            "agent_id", "sub", "sub1", "sub2", "sub3", "subid", "sub_id",
+            "campaign", "campaign_id", "placement", "creative", "ad", "ad_id",
+            "ads", "banner", "promo", "promo_code", "promo_id", "coupon",
+            "coupon_code", "vip", "member", "member_id", "scene", "scene_id",
+            "qr", "qrcode", "scan", "scan_code", "referral", "referral_code",
+            "referrer", "sponsor", "distributor", "partner", "partner_id",
+            "affiliate", "affiliate_id", "aff_id", "track", "track_id",
+            "click", "click_id", "clickid", "webid", "appid", "openid",
+            "room_id", "room_code", "live_id", "live_code", "anchor_id",
+            "anchor", "streamer", "platform", "platform_id", "media",
+            "media_id", "medium", "content_id", "content_code", "article_id",
+            "article", "post_id", "post", "video_id", "video", "short_id",
+            "short_code", "url_token"
+        }
         params = urllib.parse.parse_qs(parsed.query)
         for p in params:
-            if p.lower() in KEYWORDS["aff_params"]:
+            pl = p.lower()
+            if pl in KEYWORDS["aff_params"] or pl in EXTRA_AFF_PARAMS:
+                return True
+        # 路径关键词检测
+        path_lower = parsed.path.lower()
+        for kw in ("/aff/", "/ref/", "/referral/", "/invite/", "/promo/",
+                   "/campaign/", "/track/", "/click/", "/redirect/", "/go/", "/out/"):
+            if kw in path_lower:
                 return True
     except Exception:
         pass
@@ -411,8 +460,11 @@ async def forward_message(client, msg, dest_entity):
     # 提取隐藏链接（实体里的 URL，如"👉🏻点击获取"实际链接在 entities 里）
     hidden_links = extract_hidden_links(msg)
     if hidden_links:
-        # 把隐藏链接还原显示到文本末尾
-        text = text + "\n\n" + "\n".join(hidden_links)
+        # 过滤掉 aff 引流链接，只显示普通链接
+        safe_links = [u for u in hidden_links if not is_aff_link(u)]
+        if safe_links:
+            # 把隐藏链接还原显示到文本末尾
+            text = text + "\n\n" + "\n".join(safe_links)
     # 广告过滤
     if cfg.ad_filter and contains_ad(text):
         print(f"[过滤] 广告命中，跳过 #{msg.id}")
