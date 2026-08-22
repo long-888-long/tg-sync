@@ -111,8 +111,10 @@ def load_keywords():
 def is_aff_link(url):
     """检测 aff/引流链接（带跟踪参数 / 短链 / 跳转域名）"""
     try:
-        if "t.me/+" in url:
-            return True  # 私有邀请链接
+        if "t.me/" in url:
+            # Telegram 引流链接：私有邀请 / joinchat / 带 start 参数的 bot 邀请
+            if "t.me/+" in url or "/joinchat/" in url or "start=" in url or "startapp=" in url:
+                return True
         parsed = urllib.parse.urlparse(url)
         host = (parsed.hostname or "").lower()
         # 短链/跳转/电商推广域名检测
@@ -226,6 +228,9 @@ def strip_trace(text):
             continue
         # 单独出现的引流词（无动词前缀）
         if re.match(r'^(投稿通道|频道链接|频道入口|群号|群链接|群二维码|交流群|水群|茶馆|入群|进群|加群)$', s):
+            continue
+        # 纯 t.me 引流链接行（频道/群/bot 链接）
+        if re.match(r'^https?://t\.me/\S+$', s):
             continue
         if re.match(r'^[🌸🌹🌺✨🌟⭐💫·●○•]+$', s):
             continue
@@ -461,7 +466,7 @@ async def forward_message(client, msg, dest_entity):
     hidden_links = extract_hidden_links(msg)
     if hidden_links:
         # 过滤掉 aff 引流链接，只显示普通链接
-        safe_links = [u for u in hidden_links if not is_aff_link(u)]
+        safe_links = [u for u in hidden_links if not is_aff_link(u) and "t.me/" not in u]
         if safe_links:
             # 把隐藏链接还原显示到文本末尾
             text = text + "\n\n" + "\n".join(safe_links)
